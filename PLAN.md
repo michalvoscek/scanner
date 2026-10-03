@@ -36,6 +36,9 @@ whitespace. For multiple files, results are concatenated in upload order.
 | Multipart field names | `/scanFile` → `file`; `/scanMultipleFiles` → repeated `files` |
 | Dependencies | Project virtualenv `.venv`, pinned `requirements.txt` |
 | Worker pool size | Default 4, env-configurable |
+| Worker recycle policy | Any scan failure / timeout / EOF / desync ⇒ kill + respawn; a suspect worker never returns to the queue |
+| `/scanMultipleFiles` partial failure | All-or-nothing: 500 with detail naming the failed upload(s); successful results discarded |
+| Startup worker failure | Fail fast — abort lifespan startup; never run degraded with an empty pool |
 | Python | 3.13 (installed), asyncio Proactor event loop (Windows default, supports subprocess pipes) |
 
 ## Project structure
@@ -60,6 +63,7 @@ eset/
 │   └── test_api.py      # integration tests: pool + endpoints via mock scanner
 ├── requirements.txt     # fastapi, uvicorn, python-multipart
 ├── requirements-dev.txt # pytest, pytest-asyncio, httpx
+├── pyproject.toml       # pytest + pytest-asyncio config (asyncio_mode = auto)
 ├── PLAN.md              # this file
 ├── README.md            # assignment (unchanged)
 └── data/                # ecls.exe + module DLLs (untracked, unchanged)
@@ -90,7 +94,7 @@ Record findings and lock protocol constants (encoding, input terminator, newline
 - [ ] `ScanEntry { name: list[str], threat: str, action: str, info: str }`
 - [ ] `ScanResponse { scan_results: list[ScanEntry] }`
 - [ ] Settings via environment variables with defaults:
-  - `ECLS_CMD` — scanner command (default: `data/ecls.exe`; overridable as list, e.g. `[python, tests/mock_ecls.py]` for tests)
+  - `ECLS_CMD` — scanner command (default: `data/ecls.exe`; overridable as list, e.g. `[python, tests/mock_ecls.py]` for tests). Resolved to an absolute path relative to the project root at config load — never depend on CWD
   - `ECLS_WORKERS` — pool size (default 4)
   - `ECLS_TIMEOUT_S` — per-scan timeout (default 300)
   - `ECLS_ENCODING` — pipe encoding (from spike, default `utf-8`)
@@ -98,41 +102,70 @@ Record findings and lock protocol constants (encoding, input terminator, newline
 
 ### 3. Parser (`app/ecls/parser.py`)
 
-- [ ] Match lines with regex `^name="(.*)", threat="(.*)", action="(.*)", info="(.*)"$`
+- [ ] Match lines with a tolerant regex `^\s*name="(.*?)", threat="(.*?)", action="(.*?)", info="(.*?)"\s*$`
+      — non-greedy values, tolerates leading whitespace and trailing `\r` (CRLF output)
+- [ ] Decode with `ECLS_ENCODING, errors="replace"` so a stray byte never 500s a scan
 - [ ] Split `name` on `»`, strip each part
 - [ ] Ignore banner / `Command line:` / `Scan started at:` / blank lines
-- [ ] Normalize: replace sent absolute temp path with original upload filename (path→name mapping supplied by caller)
+- [ ] Normalize: caller supplies exactly one (sent_temp_path → original_filename) mapping per scan;
+      replace the temp path as a prefix of the *first name component only* (nested entries keep their
+      `» ZIP » inner` parts untouched). Per-scan mapping, so duplicate upload names in one request
+      each normalize to their own original name. If ecls outputs bare filenames, this is a no-op
 
 ### 4. Process & pool (`app/ecls/process.py`, `app/ecls/pool.py`)
 
-- [ ] `EclsProcess`: spawn via `asyncio.create_subprocess_exec` (stdin/stdout PIPE, stderr drained)
+- [ ] `EclsProcess`: spawn via `asyncio.create_subprocess_exec` (stdin/stdout PIPE; stderr drained
+      by a background reader task — on the Proactor loop an undrained pipe can hang `wait()`)
 - [ ] `async scan(path) -> list[ScanEntry]`: per-process in-flight lock; write `path` + delimiter
       line to stdin, flush; read stdout lines until `__INPUT_END__`; parse; apply path→name mapping
-- [ ] Dead-process detection and transparent restart
+- [ ] Failure isolation — a worker's pipe stream is one-shot per scan: EOF / broken pipe / parse
+      desync / timeout ⇒ discard the worker (kill + respawn a fresh one); it is NEVER returned to
+      the queue, otherwise the next request reads stale `name=` lines from the aborted batch
 - [ ] `EclsPool`: spawn N processes; free workers tracked in `asyncio.Queue`;
-      `scan(path)` = acquire → scan → release; `shutdown()` = close stdin → wait → terminate
-- [ ] Per-scan timeout guard
+      `scan(path)` = acquire → scan → release healthy worker (or recycle on failure, then release
+      the fresh one)
+- [ ] `shutdown()` sequencing: close stdin → `wait(timeout=…)` → `terminate()` → `kill()`,
+      while draining stdout/stderr
+- [ ] Startup: if any of the N workers fails to spawn, abort lifespan startup (fail fast) — the
+      server must not start degraded with an empty pool
+- [ ] Per-scan timeout guard (`asyncio.wait_for`) that routes into the recycle path above
 
 ### 5. Uploads & endpoints (`app/uploads.py`, `app/main.py`)
 
 - [ ] Save each upload to a unique per-file temp dir (`tempfile.mkdtemp` under configurable base),
-      sanitized basename only (strip directory components — path-traversal safe, reject empty)
-- [ ] Cleanup temp dir in `finally`
+      sanitized basename only (strip directory components — path-traversal safe; reject empty,
+      control characters `\n\r\t`, and the literal `__INPUT_END__` — the stdin protocol is line-based
+      and such names would corrupt batch framing)
+- [ ] Cleanup temp dir in `finally`, after the scan fully completes (no open ecls handles)
+- [ ] All handlers `async def` — sync `def` handlers get bounced to the threadpool and would block
+      threads on pipe reads
 - [ ] `POST /scanFile`: `file: UploadFile = File(...)` → single scan → `ScanResponse`
 - [ ] `POST /scanMultipleFiles`: `files: list[UploadFile] = File(...)` → save all, then
-      `asyncio.gather` over pool → concatenate results in upload order
-- [ ] Lifespan: start pool on startup, shutdown on exit
-- [ ] Errors: scan failure → 500 with detail; upload validation → FastAPI 422
+      `asyncio.gather(..., return_exceptions=True)` over pool → concatenate results in upload order
+      (gather preserves order regardless of completion order)
+- [ ] Partial failure policy (confirmed decision): all-or-nothing — if any scan raised, respond 500
+      with detail naming the failed upload(s); results of successful scans are discarded
+- [ ] Lifespan: start pool on startup (fail fast on spawn failure), shutdown on exit
+- [ ] Errors: scan failure/timeout → 500 with detail naming the upload; invalid filename /
+      empty upload list → FastAPI 422
+- [ ] (optional) `ECLS_MAX_UPLOAD_MB` guard, default unlimited — nice-to-have, not required by
+      the assignment
 
 ### 6. Tests
 
 - [ ] `tests/test_parser.py` — README sample (incl. nested `ZIP` entries, empty fields),
       junk-line tolerance, `»` splitting with surrounding spaces
 - [ ] `tests/mock_ecls.py` — reads path lines + delimiter from stdin, prints banner +
-      `name="..."` lines (echoing input paths) + `__INPUT_END__`
+      `name="..."` lines (echoing input paths) + `__INPUT_END__`; ignores the real ecls argv it is
+      launched with (`/log-all /stdin-filelist /batch-delimiter=…`); special upload names trigger
+      crash / hang (never respond) for failure tests. Implements the *assumed* protocol — backport
+      any Step 0 spike findings (encoding, newline style, terminator) to the mock
 - [ ] `tests/test_api.py` — integration via `httpx.AsyncClient` with `ECLS_CMD` pointed at
       the mock: single file, multiple files (order preserved), empty upload list → 422,
-      worker restart after mock crash
+      duplicate upload names in one request (unique temp dirs + per-scan mapping),
+      scan failure → 500 naming the failed upload, worker recycle after mock crash,
+      timeout → worker recycled not reused (stale-output/desync check)
+- [ ] pytest-asyncio `asyncio_mode = "auto"` in `pyproject.toml` — no per-test markers
 
 ### 7. Run & verify
 
