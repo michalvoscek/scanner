@@ -49,11 +49,6 @@ async def test_scan_file_reports_custom_threat(client):
     assert response.json()["scan_results"][0]["threat"] == "TestTrojan.A"
 
 
-@pytest.mark.xfail(
-    reason="IMPROVEMENTS.md #1: quote-injected inner filename spoofs the "
-    "client-facing threat field (fix pending: greedy first name group)",
-    strict=False,
-)
 async def test_quote_injection_from_nested_filename_never_reaches_threat(client):
     """IMPROVEMENTS.md #1, end to end through /scanFile.
 

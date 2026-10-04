@@ -8,7 +8,7 @@ by severity. Ideas already listed in `INTERVIEW_QA.md` §6 (metrics, health
 endpoint, bounded request queue with 503, graceful drain, periodic worker
 recycling) are intentionally not repeated here.
 
-## 1. Parser: `threat` field spoofable via crafted inner filename (medium-high)
+## 1. ~~Parser: `threat` field spoofable via crafted inner filename (medium-high)~~ — FIXED
 
 `app/ecls/parser.py:17` — all four regex groups are non-greedy. A nested
 archive member named e.g. `x", threat="Win32/Eicar` makes ecls emit:

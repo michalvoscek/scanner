@@ -6,6 +6,13 @@ Result lines look like::
 
 Everything else (banner, module versions, ``Command line:``,
 ``Scan started at:``, blank lines, unknown formats) is ignored.
+
+ecls echoes filenames verbatim (no quote escaping), so a nested archive
+member named ``x", threat="Win32/Eicar`` yields an ambiguous line with a
+spurious ``", threat="`` inside the name. The ``name`` group is therefore
+greedy and anchors on the *last* ``", threat="`` occurrence, keeping
+``threat``/``action``/``info`` trustworthy; attacker junk stays harmlessly
+inside the display-only ``name``.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import re
 from app.models import ScanEntry
 
 LINE_RE = re.compile(
-    r'^\s*name="(.*?)", threat="(.*?)", action="(.*?)", info="(.*?)"\s*$'
+    r'^\s*name="(.*)", threat="(.*?)", action="(.*?)", info="(.*?)"\s*$'
 )
 GUILLEMET = "»"
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.ecls.parser import decode_line, normalize_entries, parse_line
 from app.models import ScanEntry
 
@@ -144,11 +142,8 @@ def test_normalize_tolerates_suffix_after_sent_path():
 #     name="upload.zip » ZIP » x", threat="Win32/Eicar", threat="is OK",
 #     action="", info=""
 #
-# With the current all-non-greedy regex the attacker text lands in the
-# security-relevant `threat` (and `action`/`info`) fields. Verified against
-# data/ecls.exe v16.0.65535.0 (2024-01-16). These tests are xfail until the
-# fix lands: make the FIRST regex group greedy (`name="(.*)"`) so it anchors
-# on the *last* `", threat="` occurrence — junk must stay inside `name`.
+# With the greedy `name` group the attacker text stays inside `name`
+# (display-only) and the scanner's own verdict lands in `threat`/`action`/`info`.
 # ---------------------------------------------------------------------------
 
 _SENT_PATH = r"C:\Temp\ecls_abc\upload_001.zip"
@@ -162,11 +157,6 @@ _THREAT_INJECTION_LINE = (
 )
 
 
-@pytest.mark.xfail(
-    reason="IMPROVEMENTS.md #1: non-greedy name group lets attacker text "
-    "spoof the threat field (fix pending: greedy first group)",
-    strict=False,
-)
 def test_threat_spoof_via_inner_filename_is_rejected():
     entry = parse_line(_THREAT_INJECTION_LINE)
     assert entry is not None
@@ -180,18 +170,13 @@ def test_threat_spoof_via_inner_filename_is_rejected():
 
 # Raw line for inner member named
 # `x", threat="spoofed_threat_name", action="", info=""` (fully-formed fake
-# fields): today the parser returns the attacker string VERBATIM as threat.
+# fields): the parser must still report the scanner's trailing verdict.
 _EXACT_CONTROL_LINE = (
     f'name="{_SENT_PATH} » ZIP » x", threat="spoofed_threat_name", '
     'action="", info="", threat="is OK", action="", info=""'
 )
 
 
-@pytest.mark.xfail(
-    reason="IMPROVEMENTS.md #1: attacker gets exact control of threat/action/info "
-    "(fix pending: greedy first group)",
-    strict=False,
-)
 def test_exact_control_of_threat_via_inner_filename_is_rejected():
     entry = parse_line(_EXACT_CONTROL_LINE)
     assert entry is not None
@@ -201,16 +186,10 @@ def test_exact_control_of_threat_via_inner_filename_is_rejected():
     assert "spoofed_threat_name" in "".join(entry.name)
 
 
-def test_current_spoof_behavior_is_documented():
-    """Characterizes the *vulnerable* parser; flip when IMPROVEMENTS.md #1 is fixed.
-
-    Keeps the bug observable in review diffs: if someone changes the regex,
-    this test fails and forces an explicit decision.
-    """
+def test_name_keeps_junk_from_ambiguous_lines():
     entry = parse_line(_THREAT_INJECTION_LINE)
     assert entry is not None
-    assert entry.name == [_SENT_PATH, "ZIP", "x"]
-    assert entry.threat == 'Win32/Eicar", threat="is OK'
+    assert entry.name == [_SENT_PATH, "ZIP", 'x", threat="Win32/Eicar']
     entry = parse_line(_EXACT_CONTROL_LINE)
     assert entry is not None
-    assert entry.threat == "spoofed_threat_name"
+    assert "spoofed_threat_name" in "".join(entry.name)
