@@ -49,6 +49,34 @@ async def test_scan_file_reports_custom_threat(client):
     assert response.json()["scan_results"][0]["threat"] == "TestTrojan.A"
 
 
+@pytest.mark.xfail(
+    reason="IMPROVEMENTS.md #1: quote-injected inner filename spoofs the "
+    "client-facing threat field (fix pending: greedy first name group)",
+    strict=False,
+)
+async def test_quote_injection_from_nested_filename_never_reaches_threat(client):
+    """IMPROVEMENTS.md #1, end to end through /scanFile.
+
+    A nested member named `x", threat="Win32/Eicar` makes the scanner emit
+    `name="... » ZIP » x", threat="Win32/Eicar", threat="is OK", ...`. The
+    client must only ever see the scanner's own verdict in `threat`; the
+    injected text must stay inside `name`.
+    """
+    content = b'#MOCK ZIP\nx", threat="Win32/Eicar\n'
+    response = await scan_file(client, "crafted.zip", content)
+    assert response.status_code == 200
+    entries = response.json()["scan_results"]
+    # The injected text must remain visible in `name` (never silently dropped)...
+    assert any(
+        "Win32/Eicar" in part for entry in entries for part in entry["name"]
+    )
+    # ...while threat/action/info stay the scanner's own verdicts.
+    for entry in entries:
+        assert entry["threat"] == "is OK"
+        assert entry["action"] == ""
+        assert entry["info"] == ""
+
+
 async def test_scan_multiple_files_preserves_upload_order(client):
     uploads = [
         ("a.txt", b"alpha"),
