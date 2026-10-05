@@ -14,6 +14,11 @@ lines starting with ``#MOCK ``:
     #MOCK CRASH         die immediately without answering
     #MOCK HANG          never answer
     #MOCK DESYNC        answer without the delimiter, keep serving
+    #MOCK UNOPENABLE    answer with the verified unable-to-open verdict
+    #MOCK NOENTRIES     answer with the delimiter but zero name= lines
+    #MOCK JUNKLINE      emit one unparseable line before the delimiter
+    #MOCK NOBANNER      never print the 'Scan started at:' banner line
+    #MOCK DELAYED_BANNER=<secs>  delay the banner marker line
 """
 
 from __future__ import annotations
@@ -68,6 +73,9 @@ def parse_directives(lines: list[str]) -> dict:
         "crash": False,
         "hang": False,
         "desync": False,
+        "noentries": False,
+        "junkline": False,
+        "unopenable": False,
         "inner": [],
     }
     for line in lines:
@@ -83,11 +91,24 @@ def parse_directives(lines: list[str]) -> dict:
             directives["hang"] = True
         elif token == "DESYNC":
             directives["desync"] = True
+        elif token == "NOENTRIES":
+            directives["noentries"] = True
+        elif token == "JUNKLINE":
+            directives["junkline"] = True
+        elif token == "UNOPENABLE":
+            directives["unopenable"] = True
         elif token.startswith("THREAT="):
             directives["threat"] = token[len("THREAT=") :]
         elif token.startswith("SLEEP="):
             directives["sleep"] = float(token[len("SLEEP=") :])
     return directives
+
+
+def arg_value_from_argv(argv: list[str], flag: str) -> str:
+    for token in argv:
+        if token.startswith(flag):
+            return token[len(flag) :]
+    return ""
 
 
 def main() -> int:
@@ -99,12 +120,21 @@ def main() -> int:
 
     sys.stderr.buffer.write(b"WARNING! (mock) scanner started\r\n")
     sys.stderr.buffer.flush()
+
+    # Banner faults arrive via argv (content directives cannot work pre-scan):
+    # /nobanner omits the 'Scan started at:' marker line,
+    # /delayed-banner=<secs> delays the whole banner.
+    no_banner = "/nobanner" in argv
+    delayed = arg_value_from_argv(argv, "/delayed-banner=")
+    if delayed:
+        time.sleep(float(delayed))
     emit("")
     emit("ECLS mock Command-line scanner, version 0.0.0.0, (C) 1992-2026 nobody")
     emit("")
     emit("Command line: " + " ".join(argv))
     emit("")
-    emit(f"Scan started at:   {time.ctime()}")
+    if not no_banner:
+        emit(f"Scan started at:   {time.ctime()}")
 
     scans = 0
     for raw in iter(sys.stdin.buffer.readline, b""):
@@ -131,12 +161,24 @@ def main() -> int:
             log_event(log_dir, "hang", sent_path)
             time.sleep(86400)
             continue
+        if directives["noentries"]:
+            # delimiter only: protocol violation (zero result entries)
+            emit(delimiter)
+            log_event(log_dir, "end", sent_path)
+            continue
         threat = directives["threat"]
-        emit(f'name="{sent_path}", threat="{threat}", action="", info=""')
+        if directives["unopenable"]:
+            # the verified real-scanner verdict for an unopenable file
+            emit(f'name="{sent_path}", threat="", action="", info="unable to open"')
+        else:
+            emit(f'name="{sent_path}", threat="{threat}", action="", info=""')
         if directives["zip"]:
             for inner in directives["inner"]:
                 nested = f"{sent_path} {GUILLEMET} ZIP {GUILLEMET} {inner}"
                 emit(f'name="{nested}", threat="{threat}", action="", info=""')
+        if directives["junkline"]:
+            # an unparseable line inside the batch: protocol violation
+            emit("mock banner debris inside a scan batch")
         if not directives["desync"]:
             emit(delimiter)
         log_event(log_dir, "end", sent_path)

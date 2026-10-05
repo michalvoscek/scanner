@@ -179,6 +179,115 @@ async def test_desynced_worker_is_never_reused(make_settings):
             ]
 
 
+async def test_unable_to_open_verdict_is_a_failure_not_clean_200(make_settings):
+    """IMPROVEMENTS.md #10: 'unable to open' means the file was NOT scanned.
+
+    The verdict shape (verified against the real scanner) is threat='',
+    action='', info='unable to open' — previously returned as a normal 200
+    entry, a false negative for callers that only check the status code.
+    """
+    app = create_app(make_settings(workers=1))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            response = await scan_file(client, "locked.zip", b"#MOCK UNOPENABLE")
+            assert response.status_code == 500
+            assert "locked.zip" in response.json()["detail"]
+            # the failing scan must not leak the internal temp path
+            assert "upload_" not in response.text
+            # the pool must not have lost a worker to this failure
+            assert app.state.ecls_pool.size == 1
+
+            followup = await scan_file(client, "after.txt", b"clean")
+            assert followup.status_code == 200
+            assert followup.json()["scan_results"] == [
+                {"name": ["after.txt"], "threat": "is OK", "action": "", "info": ""}
+            ]
+
+
+async def test_zero_entries_answer_is_a_desync_failure(make_settings):
+    """IMPROVEMENTS.md #8: zero name= lines before the delimiter is desync."""
+    app = create_app(make_settings(workers=1))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            response = await scan_file(client, "silent.zip", b"#MOCK NOENTRIES")
+            assert response.status_code == 500
+            assert app.state.ecls_pool.size == 1
+
+            followup = await scan_file(client, "after.txt", b"clean")
+            assert followup.status_code == 200
+            assert followup.json()["scan_results"] == [
+                {"name": ["after.txt"], "threat": "is OK", "action": "", "info": ""}
+            ]
+
+
+async def test_junk_line_inside_batch_is_a_desync_failure(make_settings):
+    """IMPROVEMENTS.md #8: after the banner drain, every line before the
+    delimiter must parse as a result entry; anything else fails the request."""
+    app = create_app(make_settings(workers=1))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            response = await scan_file(client, "noisy.zip", b"#MOCK JUNKLINE")
+            assert response.status_code == 500
+            assert app.state.ecls_pool.size == 1
+
+            followup = await scan_file(client, "after.txt", b"clean")
+            assert followup.status_code == 200
+            assert followup.json()["scan_results"] == [
+                {"name": ["after.txt"], "threat": "is OK", "action": "", "info": ""}
+            ]
+
+
+async def test_unable_to_open_in_multi_scan_is_all_or_nothing(client):
+    """IMPROVEMENTS.md #10+#15: one unscanned file fails the whole batch."""
+    uploads = [
+        ("good.txt", b"good"),
+        ("bad.zip", b"#MOCK UNOPENABLE"),
+    ]
+    response = await scan_multiple(client, uploads)
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "'bad.zip'" in detail
+    assert "good.txt" not in detail
+
+
+async def test_delayed_banner_is_drained_and_never_leaks_into_results(make_settings):
+    """IMPROVEMENTS.md #8: the banner is drained until its marker, however
+    late it arrives; banner text must never surface as scan output."""
+    app = create_app(
+        make_settings(mock_args=["/delayed-banner=0.3"], workers=1)
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            response = await scan_file(client, "test.zip", b"plain")
+            assert response.status_code == 200
+            assert response.json()["scan_results"] == [
+                {"name": ["test.zip"], "threat": "is OK", "action": "", "info": ""}
+            ]
+
+
+async def test_startup_fails_when_banner_never_completes(make_settings):
+    """IMPROVEMENTS.md #8: a scanner that never finishes its banner is a
+    spawn failure, not a worker that silently misparses later."""
+    app = create_app(
+        make_settings(mock_args=["/nobanner"], startup_timeout_s=2.0, workers=1)
+    )
+    with pytest.raises(Exception):
+        async with app.router.lifespan_context(app):
+            pass
+
+
 async def test_multiple_files_partial_failure_is_all_or_nothing(client):
     uploads = [
         ("good.txt", b"good"),

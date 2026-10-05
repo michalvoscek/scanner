@@ -107,7 +107,7 @@ disks cannot stall in-flight pipe reads of other scans.
   the interval-overlap assertion is already the robust one — the timing assert
   could be relaxed or dropped.
 
-## 8. Parser fails open on unparsed or empty output (medium-high)
+## 8. ~~Parser fails open on unparsed or empty output (medium-high)~~ — FIXED
 
 `app/ecls/process.py:150-153` skips any line that does not match and still
 returns 200, putting the worker back in the pool. Zero `name=` lines, or a
@@ -118,7 +118,14 @@ indistinguishable from a bad result line.
 **Fix:** drain the banner at startup. After that, unexpected lines or zero
 entries are a desync: fail the request and recycle the worker.
 
-## 9. Archive member names can break the pipe framing (medium-high, unverified against ecls)
+**Implemented:** `start()` now drains stdout until the verified banner
+terminator `Scan started at:` (`docs/probe_ecls_findings.md`); EOF before the
+marker is a spawn failure. `_scan_locked` fails closed: an unparseable line
+mid-batch or zero entries raises `EclsDesyncError`, which the pool answers
+with discard + replacement. Mock directives `NOENTRIES` / `JUNKLINE` /
+`/nobanner` / `/delayed-banner=` cover the regressions.
+
+## 9. ~~Archive member names can break the pipe framing (medium-high, unverified against ecls)~~ — VERIFIED SAFE
 
 Upload names never reach stdin, but ecls echoes nested member names with no
 escaping. A member whose name contains a newline and `__INPUT_END__` can end
@@ -127,7 +134,14 @@ next client (temp paths, names, verdicts). `data/ecls.exe` was not in the tree,
 so this needs a check against the real binary. If ecls strips newlines, item 1
 is sufficient.
 
-## 10. `unable to open` and empty results are HTTP 200 (medium)
+**Verified against data/ecls.exe:** a zip member named
+`a\n__INPUT_END__\nb.txt` is echoed as `a___INPUT_END___b.txt` — ecls
+replaces newlines with underscores, so a member name can never split a line
+or fake the delimiter (which must be a whole line). Additionally, #8's
+fail-closed desync detection would turn any early delimiter into a 500 with
+worker recycling. No code change required.
+
+## 10. ~~`unable to open` and empty results are HTTP 200 (medium)~~ — FIXED
 
 The server just wrote the file, so `info="unable to open"` means it was not
 scanned. It is still returned as a normal entry. Callers that only check
@@ -136,6 +150,12 @@ Same for `scan_results: []`.
 
 **Fix:** treat `unable to open` and zero entries as 500. Do not reuse that
 worker if the output was incomplete.
+
+**Implemented:** the verdict tuple `threat="" action="" info="unable to
+open"` (empirically confirmed against the real binary, including for
+nonexistent paths) raises `EclsScanFailedError` → 500; the pool discards and
+replaces the worker (no reuse after anomalous output). Empty-file uploads are
+unaffected — the real scanner gives them a normal clean verdict (verified).
 
 ## 11. cp1252 temp paths fail on Slovak Windows and thrash the pool (medium-high)
 

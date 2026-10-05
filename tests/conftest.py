@@ -20,9 +20,12 @@ TEST_STARTUP_TIMEOUT_S = 15.0
 
 def _make_settings(**overrides) -> Settings:
     log_dir = overrides.pop("log_dir", None)
+    mock_args = overrides.pop("mock_args", None)
     ecls_cmd = [sys.executable, str(MOCK_ECLS)]
     if log_dir is not None:
         ecls_cmd += ["--log", str(log_dir)]
+    if mock_args:
+        ecls_cmd += list(mock_args)
     values = dict(
         ecls_cmd=tuple(ecls_cmd),
         ecls_args=(

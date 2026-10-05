@@ -5,6 +5,10 @@ Protocol (verified against data/ecls.exe, see app.config):
 - one file path line on stdin -> ``name="..."`` result lines followed by the
   batch delimiter line on stdout; the delimiter is never sent to stdin
 - stdin EOF -> ecls prints a summary and exits
+
+Banner shape, clean-scan output shape and the ``unable to open`` verdict were
+verified empirically against data/ecls.exe (probe findings kept in
+``docs/probe_ecls_findings.md``).
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 _INPUT_NEWLINE = "\r\n"
 _DRAIN_CHUNK = 4096
+_BANNER_START_MARKER = "Scan started at:"
+_UNABLE_TO_OPEN = "unable to open"
 
 
 class EclsError(Exception):
@@ -33,6 +39,29 @@ class EclsSpawnError(EclsError):
 
 class EclsStreamError(EclsError):
     pass
+
+
+class EclsDesyncError(EclsError):
+    """Scanner produced output that breaks the verified line protocol."""
+
+
+class EclsScanFailedError(EclsError):
+    """The scanner answered, but the file was not actually scanned."""
+
+
+def _is_unable_to_open(entry: ScanEntry) -> bool:
+    """True when the verdict row means 'not scanned' rather than 'clean'.
+
+    Verified against data/ecls.exe: an unopenable (e.g. missing) path yields
+    exactly threat="", action="", info="unable to open" plus the delimiter.
+    The verdict must carry no threat and no action -- a file with an actual
+    finding never matches.
+    """
+    return (
+        entry.threat == ""
+        and entry.action == ""
+        and entry.info.lower().startswith(_UNABLE_TO_OPEN)
+    )
 
 
 class EclsProcess:
@@ -68,18 +97,39 @@ class EclsProcess:
             self._drain_forever(self._proc.stderr)
         )
         try:
-            first_line = await asyncio.wait_for(
-                self._proc.stdout.readline(), self._settings.startup_timeout_s
+            await asyncio.wait_for(
+                self._drain_banner(self._proc.stdout), self._settings.startup_timeout_s
             )
         except TimeoutError as exc:
             await self.stop()
             raise EclsSpawnError(
-                "scanner did not print its startup banner in time"
+                "scanner did not finish its startup banner in time"
             ) from exc
-        if not first_line:
-            await self.stop()
-            raise EclsSpawnError("scanner exited before printing its startup banner")
         logger.debug("scanner worker started (pid %s)", self._proc.pid)
+
+    async def _drain_banner(self, stdout: asyncio.StreamReader) -> None:
+        """Read stdout until the 'Scan started at:' marker or EOF.
+
+        The verified banner is a fixed sequence of lines ending with the
+        marker line. Draining it here means no banner text can leak into a
+        later scan's output window. A scanner that exits or stops before the
+        marker is a spawn failure.
+        """
+        first = await stdout.readline()
+        if not first:
+            raise EclsSpawnError("scanner exited before printing its startup banner")
+        marker_seen = _BANNER_START_MARKER in decode_line(
+            first, self._settings.encoding
+        )
+        while not marker_seen:
+            raw = await stdout.readline()
+            if not raw:
+                raise EclsSpawnError(
+                    "scanner exited before printing its startup banner"
+                )
+            marker_seen = _BANNER_START_MARKER in decode_line(
+                raw, self._settings.encoding
+            )
 
     async def scan(self, sent_path: str, original_name: str) -> list[ScanEntry]:
         async with self._lock:
@@ -136,7 +186,6 @@ class EclsProcess:
         except Exception as exc:
             raise EclsStreamError(f"failed to send path to scanner: {exc}") from exc
         entries: list[ScanEntry] = []
-        ignored_lines = 0
         delimiter = self._settings.delimiter
         while True:
             raw = await stdout.readline()
@@ -149,14 +198,29 @@ class EclsProcess:
                 break
             entry = parse_line(line)
             if entry is None:
-                ignored_lines += 1
-                continue
+                logger.warning(
+                    "scanner produced an unparseable line mid-batch: %r", line
+                )
+                raise EclsDesyncError(
+                    "scanner produced an unparseable line mid-batch"
+                )
             entries.append(entry)
+        if not entries:
+            raise EclsDesyncError("scanner answered the scan with zero entries")
+        for entry in entries:
+            if _is_unable_to_open(entry):
+                logger.warning(
+                    "scanner could not open %s for scanning (info=%r)",
+                    sent_path,
+                    entry.info,
+                )
+                raise EclsScanFailedError(
+                    "scanner could not open the uploaded file for scanning"
+                )
         logger.debug(
-            "scan of %s produced %d entries (%d ignored lines)",
+            "scan of %s produced %d entries",
             sent_path,
             len(entries),
-            ignored_lines,
         )
         return normalize_entries(entries, sent_path, original_name)
 
