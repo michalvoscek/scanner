@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.routing import APIRouter
@@ -26,6 +28,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
+    # Fail fast on an unusable/non-ASCII scan dir rather than 500-ing (and
+    # recycling workers) on every request (IMPROVEMENTS.md #11).
+    settings.validate_scan_dir()
+    _sweep_stale_scan_dirs(settings.scan_base)
     pool = EclsPool(settings)
     await pool.start()
     app.state.ecls_pool = pool
@@ -33,6 +39,23 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await pool.shutdown()
+
+
+def _sweep_stale_scan_dirs(scan_base: Path) -> None:
+    """Best-effort removal of per-upload dirs left over from a crash.
+
+    Each upload lives in its own ``ecls_*`` directory under ``scan_base``;
+    a hard crash (or a Windows sharing violation during rmtree) can leave
+    sample files behind. Only directories are swept and ignore_errors stays
+    best-effort — never touch anything we did not create under scan_base.
+    """
+    try:
+        entries = list(scan_base.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_dir() and entry.name.startswith("ecls_"):
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 def get_settings_dep(request: Request) -> Settings:

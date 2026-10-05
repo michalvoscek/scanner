@@ -380,3 +380,60 @@ async def test_startup_fails_fast_when_scanner_exe_is_missing(make_settings):
     with pytest.raises(Exception):
         async with app.router.lifespan_context(app):
             pass
+
+
+async def test_unencodable_scan_base_fails_at_startup(
+    make_settings, tmp_path, monkeypatch
+):
+    """IMPROVEMENTS.md #11: a temp path that cannot be encoded in the wire
+    encoding breaks every scan; that must fail at startup, not 500 (and
+    respawn healthy workers) per request."""
+    # 'č' is representable in cp1250 but NOT in cp1252 (conftest encoding)
+    hostile_base = tmp_path / "Kováč"
+    hostile_base.mkdir()
+    app = create_app(make_settings(temp_base=hostile_base))
+    with pytest.raises(Exception) as excinfo:
+        async with app.router.lifespan_context(app):
+            pass
+    assert "not representable" in str(excinfo.value)
+
+
+async def test_unencodable_sent_path_keeps_healthy_worker(make_settings, tmp_path):
+    """IMPROVEMENTS.md #11: a pre-IO encode error must not recycle a worker.
+
+    A filename whose temp path cannot be encoded in the wire encoding (here
+    driven directly against the pool; the endpoint maps any scan failure to
+    500) must leave the worker untouched: it goes back to the queue instead
+    of being discarded and replaced.
+    """
+    nonascii = "Kováč"
+    try:
+        hostile_base = tmp_path / nonascii
+        hostile_base.mkdir(parents=True)
+    except OSError:
+        pytest.skip(f"filesystem cannot host {nonascii!r}")
+    app = create_app(make_settings())
+    async with app.router.lifespan_context(app):
+        pool = app.state.ecls_pool
+        workers_before = pool.size
+        queue_before = pool._free.qsize()
+        # A path containing 'č' is not encodable in conftest's cp1252.
+        unencodable = str(hostile_base / "s.clf")
+        with pytest.raises(UnicodeEncodeError):
+            unencodable.encode("cp1252", errors="strict")
+        try:
+            await pool.scan(unencodable, "hostile")
+        except Exception as exc:
+            assert "not representable" in str(exc)
+        else:
+            raise AssertionError("unencodable path should have failed")
+        # The worker was never discarded and is still handed out.
+        assert pool.size == workers_before
+        assert pool._free.qsize() == queue_before
+        # Answer 200 with the same worker afterwards.
+        clean_file = tmp_path / "clean.txt"
+        clean_file.write_text("clean")
+        entries = await pool.scan(str(clean_file), "after")
+        assert entries[0].threat == "is OK"
+
+

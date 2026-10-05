@@ -2,8 +2,13 @@
 
 Protocol constants locked in by the Step 0 spike against data/ecls.exe:
 
-- pipe encoding is cp1252: the "»" name separator arrives as the single
-  byte 0xBB (not UTF-8)
+- pipe encoding is the Windows ANSI code page (mbcs; ACP=1252 on the probe
+  machine, where "»" arrived as the single byte 0xBB, ruling out UTF-8).
+  mbcs rather than a pinched cp1252: ACP varies per system (1250 on Slovak
+  Windows) and ecls, like typical Win32 console programs, most likely decodes
+  its stdin via CP_ACP. ASCII paths encode identically under every ACP, so
+  the default wire need for non-ASCII bytes is limited to the echoed
+  archive member names in scanner output.
 - request/response is per stdin line: one file path line makes ecls print
   the ``name="..."`` result lines for that file followed by a single
   ``__INPUT_END__`` line on stdout; the /batch-delimiter value is an OUTPUT
@@ -17,6 +22,7 @@ Protocol constants locked in by the Step 0 spike against data/ecls.exe:
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,10 +31,22 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ECLS_CMD = "data/ecls.exe"
 DEFAULT_ECLS_ARGS = "/log-all /stdin-filelist /batch-delimiter=__INPUT_END__"
 DEFAULT_DELIMITER = "__INPUT_END__"
-DEFAULT_ENCODING = "cp1252"
+# Windows ANSI code page (GetACP); identical to cp1252 on the probe machine.
+# See the module docstring for why mbcs and not a hard-coded cp1252.
+DEFAULT_ENCODING = "mbcs"
 DEFAULT_WORKERS = 4
 DEFAULT_TIMEOUT_S = 300.0
 DEFAULT_STARTUP_TIMEOUT_S = 20.0
+
+# A non-ASCII temp directory breaks the pipe protocol on any encoding that
+# cannot represent the profile characters (e.g. 'č' fits cp1250 but not
+# cp1252). %ALLUSERSPROFILE% (usually C:\ProgramData) is machine-local,
+# ASCII by construction on every Windows install, writable and deletable
+# by non-elevated processes (unlike C:\Windows\Temp, where a created
+# directory cannot be removed again). Upload dir names and file names are
+# generated ASCII (see app.uploads), so scan paths are protocol-safe by
+# construction when they live under this base.
+SCAN_DIR_NAME = "ecls-scan"
 
 
 def _resolve_executable(token: str) -> str:
@@ -67,6 +85,52 @@ def _positive_float(raw: str | None, default: float) -> float:
     return value
 
 
+def _default_scan_base() -> Path:
+    r"""Machine-local, path-encoding-safe scan base for uploaded samples.
+
+    %ALLUSERSPROFILE% (normally C:\ProgramData) exists on every Windows
+    install with an ASCII name; %TEMP% lives inside the user profile whose
+    absolute path can contain characters outside a fixed ACP such as
+    cp1252 (e.g. C:\Users\Kováč\...). Falls back to %TEMP% when
+    ALLUSERSPROFILE is unset (e.g. non-Windows dev environments).
+    """
+    allusers = os.environ.get("ALLUSERSPROFILE", "")
+    if allusers.strip():
+        return Path(allusers) / SCAN_DIR_NAME
+    return Path(tempfile.gettempdir()) / SCAN_DIR_NAME
+
+
+def _validate_scan_dir(dir_candidate: Path, encoding: str) -> None:
+    r"""Fail fast when the scan dir cannot carry the pipe protocol.
+
+    Three failure modes, all cheap to check at startup instead of failing
+    per request (which would also thrash the pool, IMPROVEMENTS.md #11):
+
+    - the absolute path is not encodable in the wire encoding ('č' is
+      representable in cp1250 but not cp1252)
+    - the directory is not usable: cannot be created, written to, and
+      deleted again (C:\Windows\Temp accepts create but refuses delete)
+    """
+    probe = dir_candidate / "ecls_probe_write"
+    try:
+        str(probe).encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"scan dir {str(dir_candidate)!r} is not representable in the "
+            f"pipe encoding {encoding!r}; set ECLS_TEMP_BASE to an "
+            f"{encoding}-safe directory"
+        ) from exc
+    try:
+        dir_candidate.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"probe")
+        probe.unlink()
+    except OSError as exc:
+        raise ValueError(
+            f"scan dir {str(dir_candidate)!r} is not usable "
+            f"(create/write/delete failed): {exc}"
+        ) from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     ecls_cmd: tuple[str, ...] = (_resolve_executable(DEFAULT_ECLS_CMD),)
@@ -75,6 +139,8 @@ class Settings:
     timeout_s: float = DEFAULT_TIMEOUT_S
     startup_timeout_s: float = DEFAULT_STARTUP_TIMEOUT_S
     encoding: str = DEFAULT_ENCODING
+    # None = derive at startup (ASCII-safe machine-local dir, see
+    # scan_base()); an explicit ECLS_TEMP_BASE is honored but validated.
     temp_base: Path | None = None
     max_upload_bytes: int | None = None
     delimiter: str = DEFAULT_DELIMITER
@@ -93,6 +159,28 @@ class Settings:
     @property
     def scanner_argv(self) -> tuple[str, ...]:
         return (*self.ecls_cmd, *self.ecls_args)
+
+    @property
+    def scan_base(self) -> Path:
+        """Validated base directory for uploaded samples.
+
+        ``temp_base`` wins when set (operator override); otherwise an
+        ASCII-safe machine-local location is derived. Validation lives in
+        ``validate_scan_dir()`` so tests and exotic deployments can opt in
+        explicitly, and so the app factory can fail fast at startup.
+        """
+        if self.temp_base is not None:
+            return self.temp_base
+        return _default_scan_base()
+
+    def validate_scan_dir(self) -> None:
+        """Prove the scan directory is usable for the pipe protocol.
+
+        Raises ValueError with an operator-actionable message otherwise.
+        Called from the app lifespan, so a broken deployment fails at
+        startup instead of 500-ing (and recycling workers) per request.
+        """
+        _validate_scan_dir(self.scan_base, self.encoding)
 
     @classmethod
     def from_env(cls) -> "Settings":

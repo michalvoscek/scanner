@@ -1,8 +1,10 @@
 """Pool of persistent ecls scanner processes with failure recycling.
 
 Workers are handed out through an asyncio.Queue. A worker that fails a scan
-in any way (timeout, EOF, broken pipe, desync) is killed and never returned
-to the queue; a fresh replacement is spawned in its place.
+by protocol violation (timeout, EOF, broken pipe, desync) is killed and
+never returned to the queue; a fresh replacement is spawned in its place.
+Request-level failures raised before any protocol I/O (unencodable path)
+leave the worker untouched: it goes straight back to the queue.
 """
 
 from __future__ import annotations
@@ -11,7 +13,10 @@ import asyncio
 import logging
 
 from app.config import Settings
-from app.ecls.process import EclsProcess
+from app.ecls.process import (
+    EclsProcess,
+    EclsRequestError,
+)
 from app.models import ScanEntry
 
 logger = logging.getLogger(__name__)
@@ -56,6 +61,13 @@ class EclsPool:
             entries = await asyncio.wait_for(
                 worker.scan(sent_path, original_name), self._settings.timeout_s
             )
+        except EclsRequestError:
+            # The request failed before any protocol I/O (e.g. a path not
+            # encodable in the wire encoding). The worker is untouched and
+            # trustworthy: hand it straight back instead of recycling it
+            # (IMPROVEMENTS.md #11).
+            self._free.put_nowait(worker)
+            raise
         except BaseException as exc:
             logger.warning(
                 "scanner worker failed for %r (%r); recycling it",

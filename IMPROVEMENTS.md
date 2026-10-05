@@ -157,7 +157,7 @@ nonexistent paths) raises `EclsScanFailedError` → 500; the pool discards and
 replaces the worker (no reuse after anomalous output). Empty-file uploads are
 unaffected — the real scanner gives them a normal clean verdict (verified).
 
-## 11. cp1252 temp paths fail on Slovak Windows and thrash the pool (medium-high)
+## 11. ~~cp1252 temp paths fail on Slovak Windows and thrash the pool (medium-high)~~ — FIXED
 
 Encoding is hardcoded cp1252. Generated filenames are ASCII, but the absolute
 temp path is not. `č ď ľ ň ŕ ť` do not encode; a profile such as
@@ -167,6 +167,30 @@ in both cp1250 and cp1252, so the spike would not have caught this.
 
 **Fix:** pin an ASCII temp dir, or encode paths with the ANSI code page
 (`mbcs`). Do not recycle a worker for a pre-IO encode error.
+
+**Implemented (both alternatives, layered):**
+- `Settings.encoding` defaults to `mbcs` (the machine's ANSI code page) —
+  byte-identical to cp1252 on ACP=1252 systems, correct on cp1250 (Slovak)
+  systems where ecls most likely decodes stdin via `CP_ACP`. `ECLS_ENCODING`
+  still overrides. Output decoding follows the same codec, so echoed member
+  names no longer mojibake on localized systems.
+- Default scan base is pinned to `%ALLUSERSPROFILE%\ecls-scan`
+  (`C:\ProgramData\...` — ASCII by construction, machine-local, writable
+  and deletable by non-elevated processes; unlike `C:\Windows\Temp`, which
+  accepts create but refuses delete). `ECLS_TEMP_BASE` remains an override.
+- `Settings.validate_scan_dir()` (called from the app lifespan) fails fast
+  at startup when the base is not encodable in the wire encoding or not
+  usable (create/write/delete probe) — with an operator-actionable message
+  — instead of failing every request. The lifespan also sweeps leftover
+  `ecls_*` sample dirs from a previous crash (partial #14).
+- `_scan_locked` raises the new `EclsRequestError` for pre-IO encode
+  failures; `pool.scan` answers it by returning the untouched worker to the
+  queue instead of discard + respawn. Covered by a pool-level test with a
+  real mock worker (`test_unencodable_sent_path_keeps_healthy_worker`).
+
+Residual: samples under `C:\ProgramData\ecls-scan` inherit `Users:RX`, so
+other local users can read them; strip inheritance on the base dir at
+install time if that matters for the deployment.
 
 ## 12. Shutdown can hang waiters or orphan a process (medium)
 
@@ -194,7 +218,11 @@ spooling; cap parsed entries.
 ## 14. Temp dirs and samples can leak (low-medium)
 
 `rmtree(..., ignore_errors=True)` swallows a Windows sharing violation. A
-crash leaves `ecls_*` directories, including malware samples. No startup sweep.
+crash leaves `ecls_*` directories, including malware samples.
+
+**Partially addressed by #11's fix:** the app lifespan now sweeps leftover
+`ecls_*` dirs under the (persistent) scan base at startup, best-effort. The
+per-request `ignore_errors=True` swallow in `remove_upload` remains.
 
 ## 15. All-or-nothing multi-scan amplifies load (deliberate)
 

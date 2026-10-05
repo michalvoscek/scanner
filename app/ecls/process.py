@@ -45,6 +45,15 @@ class EclsDesyncError(EclsError):
     """Scanner produced output that breaks the verified line protocol."""
 
 
+class EclsRequestError(EclsError):
+    """The request itself is unscannable; the scanner worker is fine.
+
+    Raised before any protocol I/O, so the worker stays trustworthy and
+    the pool must put it back instead of discarding a healthy process
+    (a pre-IO encode error says nothing about the worker's state).
+    """
+
+
 class EclsScanFailedError(EclsError):
     """The scanner answered, but the file was not actually scanned."""
 
@@ -177,7 +186,7 @@ class EclsProcess:
         try:
             payload = (sent_path + _INPUT_NEWLINE).encode(self._settings.encoding)
         except UnicodeEncodeError as exc:
-            raise EclsStreamError(
+            raise EclsRequestError(
                 f"scanner path is not representable in {self._settings.encoding}: {sent_path!r}"
             ) from exc
         try:

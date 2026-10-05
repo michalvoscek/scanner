@@ -1,9 +1,10 @@
 """Persist uploads to unique temp directories, safe for the line protocol.
 
-Each upload lands in its own ``tempfile.mkdtemp`` directory under a
-generated, protocol-safe filename (the scanner only ever sees this path,
-so upload names can never break line framing). The original name is kept
-for normalizing scanner output.
+Each upload lands in its own ``tempfile.mkdtemp`` directory under
+``settings.scan_base`` (an ASCII-safe, validated machine-local dir) using a
+generated, protocol-safe filename — the scanner only ever sees this path,
+so neither upload names nor profile-path characters can ever break the
+pipe encoding. The original name is kept for normalizing scanner output.
 """
 
 from __future__ import annotations
@@ -64,7 +65,11 @@ def _temp_suffix(raw: str | None) -> str:
 
 async def save_upload(upload: UploadFile, settings: Settings) -> SavedUpload:
     original_name = sanitize_filename(upload.filename, settings.delimiter)
-    directory = Path(tempfile.mkdtemp(prefix="ecls_", dir=settings.temp_base))
+    directory = Path(
+        await run_in_threadpool(
+            tempfile.mkdtemp, prefix="ecls_", dir=settings.scan_base
+        )
+    )
     path = directory / f"upload_{uuid.uuid4().hex}{_temp_suffix(upload.filename)}"
     try:
         limit = settings.max_upload_bytes

@@ -18,7 +18,7 @@ TEST_TIMEOUT_S = 6.0
 TEST_STARTUP_TIMEOUT_S = 15.0
 
 
-def _make_settings(**overrides) -> Settings:
+def _make_settings(tmp_path, **overrides) -> Settings:
     log_dir = overrides.pop("log_dir", None)
     mock_args = overrides.pop("mock_args", None)
     ecls_cmd = [sys.executable, str(MOCK_ECLS)]
@@ -37,7 +37,7 @@ def _make_settings(**overrides) -> Settings:
         timeout_s=TEST_TIMEOUT_S,
         startup_timeout_s=TEST_STARTUP_TIMEOUT_S,
         encoding="cp1252",
-        temp_base=None,
+        temp_base=tmp_path,
         max_upload_bytes=None,
     )
     values.update(overrides)
@@ -45,8 +45,14 @@ def _make_settings(**overrides) -> Settings:
 
 
 @pytest.fixture
-def make_settings():
-    return _make_settings
+def make_settings(tmp_path):
+    """Settings factory pinned to ``tmp_path`` as the scan base.
+
+    Every test scans out of its own tmp dir, never the machine-local
+    default scan base; pass ``temp_base=None`` to exercise the derived
+    default instead.
+    """
+    return lambda **overrides: _make_settings(tmp_path, **overrides)
 
 
 @pytest_asyncio.fixture
