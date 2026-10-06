@@ -58,7 +58,7 @@ paths / exception text) while `/scanMultipleFiles` deliberately does not.
 **Fix:** special-case `TimeoutError` → `"scan timed out after {timeout_s} s"`;
 keep exception details in logs only, matching the multi-file endpoint.
 
-## 5. Blocking filesystem calls on the event loop (medium)
+## 5. ~~Blocking filesystem calls on the event loop (medium)~~ — FIXED
 
 `app/uploads.py` — `tempfile.mkdtemp` (line 67), `path.open("wb")` (line 72)
 and `shutil.rmtree` in `remove_upload` (line 89, called per file from endpoint
@@ -69,6 +69,10 @@ healthy workers.
 
 **Fix:** offload open/mkdtemp/rmtree with `run_in_threadpool` as well, so slow
 disks cannot stall in-flight pipe reads of other scans.
+
+**Implemented:** `mkdtemp`, `Path.open`, `target.close`, and both `rmtree`
+sites now go through `run_in_threadpool` like the existing `write` call;
+`remove_upload` became async and both endpoint call sites `await` it.
 
 ## 6. Minor correctness / design warts (low)
 

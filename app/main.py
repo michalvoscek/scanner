@@ -64,7 +64,7 @@ async def scan_file(
             detail=f"scan failed for uploaded file '{saved.original_name}': {exc}",
         ) from exc
     finally:
-        remove_upload(saved)
+        await remove_upload(saved)
     return ScanResponse(scan_results=entries)
 
 
@@ -84,7 +84,7 @@ async def scan_multiple_files(
         )
     finally:
         for item in saved:
-            remove_upload(item)
+            await remove_upload(item)
     failures = [
         (item.original_name, result)
         for item, result in zip(saved, results)

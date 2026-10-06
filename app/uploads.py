@@ -64,12 +64,17 @@ def _temp_suffix(raw: str | None) -> str:
 
 async def save_upload(upload: UploadFile, settings: Settings) -> SavedUpload:
     original_name = sanitize_filename(upload.filename, settings.delimiter)
-    directory = Path(tempfile.mkdtemp(prefix="ecls_", dir=settings.temp_base))
+    directory = Path(
+        await run_in_threadpool(
+            tempfile.mkdtemp, prefix="ecls_", dir=settings.temp_base
+        )
+    )
     path = directory / f"upload_{uuid.uuid4().hex}{_temp_suffix(upload.filename)}"
     try:
         limit = settings.max_upload_bytes
         total = 0
-        with path.open("wb") as target:
+        target = await run_in_threadpool(path.open, "wb")
+        try:
             while chunk := await upload.read(_READ_CHUNK):
                 total += len(chunk)
                 if limit is not None and total > limit:
@@ -77,13 +82,15 @@ async def save_upload(upload: UploadFile, settings: Settings) -> SavedUpload:
                         f"upload {original_name!r} exceeds the size limit of {limit} bytes"
                     )
                 await run_in_threadpool(target.write, chunk)
+        finally:
+            await run_in_threadpool(target.close)
         return SavedUpload(
             path=path, directory=directory, original_name=original_name
         )
     except BaseException:
-        shutil.rmtree(directory, ignore_errors=True)
+        await run_in_threadpool(shutil.rmtree, directory, ignore_errors=True)
         raise
 
 
-def remove_upload(saved: SavedUpload) -> None:
-    shutil.rmtree(saved.directory, ignore_errors=True)
+async def remove_upload(saved: SavedUpload) -> None:
+    await run_in_threadpool(shutil.rmtree, saved.directory, ignore_errors=True)
