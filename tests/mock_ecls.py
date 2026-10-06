@@ -12,6 +12,7 @@ lines starting with ``#MOCK ``:
     #MOCK THREAT=...    threat value for this file's entries
     #MOCK SLEEP=<secs>  delay the response to emulate a slow scan
     #MOCK CRASH         die immediately without answering
+    #MOCK DIE           answer this scan normally, then die instead of idling
     #MOCK HANG          never answer
     #MOCK DESYNC        answer without the delimiter, keep serving
     #MOCK UNOPENABLE    answer with the verified unable-to-open verdict
@@ -71,6 +72,7 @@ def parse_directives(lines: list[str]) -> dict:
         "threat": "is OK",
         "sleep": 0.0,
         "crash": False,
+        "die": False,
         "hang": False,
         "desync": False,
         "noentries": False,
@@ -87,6 +89,8 @@ def parse_directives(lines: list[str]) -> dict:
             directives["zip"] = True
         elif token == "CRASH":
             directives["crash"] = True
+        elif token == "DIE":
+            directives["die"] = True
         elif token == "HANG":
             directives["hang"] = True
         elif token == "DESYNC":
@@ -182,6 +186,11 @@ def main() -> int:
         if not directives["desync"]:
             emit(delimiter)
         log_event(log_dir, "end", sent_path)
+        if directives["die"]:
+            # exits after a complete answer: the worker is returned to the
+            # pool and only then turns up dead, so the next scan finds a
+            # corpse sitting in the free queue
+            os._exit(0)
 
     emit("")
     emit(f"Scan completed at: {time.ctime()}")

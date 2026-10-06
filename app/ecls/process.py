@@ -77,6 +77,16 @@ class EclsProcess:
     def started(self) -> bool:
         return self._proc is not None
 
+    @property
+    def is_alive(self) -> bool:
+        """True while the child process is running.
+
+        asyncio populates ``returncode`` once the child exits, without an
+        explicit ``wait()`` (the transport observes the exit on the event
+        loop), so this is a cheap liveness check with no side effects.
+        """
+        return self._proc is not None and self._proc.returncode is None
+
     async def start(self) -> None:
         if self._proc is not None:
             return

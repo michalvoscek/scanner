@@ -26,7 +26,7 @@ junk stays harmlessly inside `name`.
 
 **Fix:** one-line regex change + a parser unit test with a quote-injected name.
 
-## 2. A worker that dies while idle costs one client request (medium)
+## 2. ~~A worker that dies while idle costs one client request (medium)~~ — FIXED
 
 `app/ecls/pool.py:48-69` — a worker process that exits between scans stays in
 `_free`. The next `scan()` hands out the corpse, the write/read fails, and the
@@ -38,6 +38,17 @@ without failing the request. Optionally retry the scan once on a fresh worker
 (scans are idempotent; trade-off: a crash-inducing file would then kill two
 workers instead of one). Add an integration test: kill an idle worker, assert
 the next request still returns 200.
+
+**Implemented:** `EclsProcess.is_alive` (asyncio sets `returncode` without an
+explicit wait; measured ~25 ms after a mock dies). `pool.scan` now draws
+through `_draw_live_worker()`, which discards + replaces corpses found on
+handout and draws the next worker (bounded loop; raises "no scanner workers
+available" if a replacement cannot be spawned and the pool is empty). The
+optional scan retry was deliberately not taken: a crash-inducing file would
+kill two workers, and the idle-death case is fully covered by replacement.
+Mock directive `#MOCK DIE` answers a scan then exits, leaving a corpse in
+`_free`; the integration test asserts the next request still returns 200 and
+the pool refills to target size.
 
 ## 3. Cancellation during worker spawn leaks an ecls.exe process (medium)
 
@@ -222,9 +233,10 @@ results.
 - Sent paths are not rejected if they contain CR/LF (only an issue if
   `ECLS_TEMP_BASE` does).
 
-The mock never dies while idle, never emits a newline inside a name, and
-always prints a clean banner, so items 2, 8, 9, and 12 are invisible to the
-current suite.
+The mock now covers idle death (`#MOCK DIE`, item 2) and protocol desyncs
+(`NOENTRIES`/`JUNKLINE`, item 8), but it never emits a newline inside a name
+and always prints a clean banner, so item 9 was only verifiable against the
+real binary. Item 12 (shutdown races) still has no mock hook.
 
 ## Suggested implementation order
 

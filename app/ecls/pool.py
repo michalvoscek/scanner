@@ -2,7 +2,9 @@
 
 Workers are handed out through an asyncio.Queue. A worker that fails a scan
 in any way (timeout, EOF, broken pipe, desync) is killed and never returned
-to the queue; a fresh replacement is spawned in its place.
+to the queue; a fresh replacement is spawned in its place. A worker that
+dies while idle is caught on handout: it is discarded and replaced, and the
+next worker is drawn instead, so the client request never fails for it.
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ class EclsPool:
         await self._heal()
         if not self._workers:
             raise RuntimeError("no scanner workers available")
-        worker = await self._free.get()
+        worker = await self._draw_live_worker()
         try:
             entries = await asyncio.wait_for(
                 worker.scan(sent_path, original_name), self._settings.timeout_s
@@ -67,6 +69,27 @@ class EclsPool:
             raise
         self._free.put_nowait(worker)
         return entries
+
+    async def _draw_live_worker(self) -> EclsProcess:
+        """Take a worker from the queue, skipping dead ones found on handout.
+
+        A worker that exits between scans stays in `_free`; handing it out
+        would fail the client's request even though the pool recovers right
+        after. Corpses are discarded and replaced silently, then the next
+        worker is drawn. The loop is bounded: every pass either returns a
+        live worker, raises, or removes one worker from `_workers`.
+        """
+        while True:
+            if self._closed:
+                raise RuntimeError("pool is shut down")
+            worker = await self._free.get()
+            if worker.is_alive:
+                return worker
+            logger.warning("scanner worker died while idle; discarding it")
+            await self._discard(worker)
+            await self._replace()
+            if not self._workers:
+                raise RuntimeError("no scanner workers available")
 
     async def shutdown(self) -> None:
         self._closed = True

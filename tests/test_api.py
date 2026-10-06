@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 
@@ -141,6 +142,41 @@ async def test_scan_crash_returns_500_naming_upload_and_recycles_worker(client):
     assert followup.json()["scan_results"] == [
         {"name": ["fine.txt"], "threat": "is OK", "action": "", "info": ""}
     ]
+
+
+async def test_dead_idle_worker_is_replaced_and_next_request_succeeds(make_settings):
+    """IMPROVEMENTS.md #2: a worker that exits between scans must not cost a
+    client request. The mock answers the first scan and then dies, leaving a
+    corpse in the free queue; the next scan must transparently discard and
+    replace it instead of handing it out and failing."""
+    app = create_app(make_settings(workers=1))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            armed = await scan_file(client, "armed.txt", b"#MOCK DIE")
+            assert armed.status_code == 200
+            assert armed.json()["scan_results"] == [
+                {"name": ["armed.txt"], "threat": "is OK", "action": "", "info": ""}
+            ]
+            assert app.state.ecls_pool.size == 1
+
+            # deterministic wait: the exited child must be observed as dead
+            # before the next scan draws it (exit is usually noticed in ~25ms)
+            pool = app.state.ecls_pool
+            (victim,) = pool._workers
+            deadline = time.perf_counter() + 5.0
+            while victim.is_alive and time.perf_counter() < deadline:
+                await asyncio.sleep(0.05)
+            assert not victim.is_alive
+
+            followup = await scan_file(client, "after.txt", b"clean")
+            assert followup.status_code == 200
+            assert followup.json()["scan_results"] == [
+                {"name": ["after.txt"], "threat": "is OK", "action": "", "info": ""}
+            ]
+            assert pool.size == 1
 
 
 async def test_scan_timeout_returns_500_and_worker_is_replaced(make_settings):
