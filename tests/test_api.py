@@ -5,11 +5,26 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from pathlib import Path
 
 import httpx
 import pytest
 
 from app.main import create_app
+
+TEST_FILES_DIR = Path(__file__).resolve().parent.parent / "test_files"
+THREATS_DIR = TEST_FILES_DIR / "threats"
+SAFE_DIR = TEST_FILES_DIR / "safe"
+
+
+def _files_in(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        return []
+    return sorted(path for path in folder.iterdir() if path.is_file())
+
+
+def _is_threat(entry) -> bool:
+    return entry["threat"] not in ("", "is OK")
 
 
 async def scan_file(client, filename, content):
@@ -48,6 +63,52 @@ async def test_scan_file_reports_custom_threat(client):
     response = await scan_file(client, "bad.exe", b"#MOCK THREAT=TestTrojan.A\n")
     assert response.status_code == 200
     assert response.json()["scan_results"][0]["threat"] == "TestTrojan.A"
+
+
+@pytest.mark.parametrize("path", _files_in(THREATS_DIR), ids=lambda path: path.name)
+async def test_every_file_in_threats_folder_is_detected(client, path):
+    """Every file dropped into test_files/threats/ must be reported as a
+    detected threat through /scanFile — for every entry in its infection
+    chain (container plus nested ZIP members), never a clean pass."""
+    response = await scan_file(client, path.name, path.read_bytes())
+    assert response.status_code == 200
+    entries = response.json()["scan_results"]
+    assert entries, "no entries returned for uploaded threat sample"
+    assert all(entry["name"][0] == path.name for entry in entries)
+    assert all(_is_threat(entry) for entry in entries)
+
+
+@pytest.mark.parametrize("path", _files_in(SAFE_DIR), ids=lambda path: path.name)
+async def test_every_file_in_safe_folder_is_clean(client, path):
+    """Every file dropped into test_files/safe/ must scan clean."""
+    response = await scan_file(client, path.name, path.read_bytes())
+    assert response.status_code == 200
+    entries = response.json()["scan_results"]
+    assert entries, "no entries returned for uploaded safe file"
+    assert all(
+        entry["threat"] == "is OK" and entry["action"] == "" and entry["info"] == ""
+        for entry in entries
+    )
+
+
+async def test_mixed_batch_reports_threats_and_safe_files_correctly(client):
+    threat_paths = _files_in(THREATS_DIR)
+    safe_paths = _files_in(SAFE_DIR)
+    uploads = [(path.name, path.read_bytes()) for path in threat_paths + safe_paths]
+    response = await scan_multiple(client, uploads)
+    assert response.status_code == 200
+    results = response.json()["scan_results"]
+    # nested entries repeat the root name, so group by first-seen name[0]
+    groups: dict[str, list] = {}
+    for entry in results:
+        groups.setdefault(entry["name"][0], []).append(entry)
+    assert list(groups) == [path.name for path in threat_paths + safe_paths]
+    threat_names = [path.name for path in threat_paths]
+    for name, entries in groups.items():
+        if name in threat_names:
+            assert all(_is_threat(entry) for entry in entries)
+        else:
+            assert all(entry["threat"] == "is OK" for entry in entries)
 
 
 async def test_quote_injection_from_nested_filename_never_reaches_threat(client):

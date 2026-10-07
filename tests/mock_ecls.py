@@ -20,17 +20,37 @@ lines starting with ``#MOCK ``:
     #MOCK JUNKLINE      emit one unparseable line before the delimiter
     #MOCK NOBANNER      never print the 'Scan started at:' banner line
     #MOCK DELAYED_BANNER=<secs>  delay the banner marker line
+
+Real-file emulation: content carrying a known threat sample signature is
+detected (see THREAT_SIGNATURES below) and the infection chain is
+reported — the container plus every nested ZIP member on the chain,
+mirroring the verified real verdict shape `threat="...", action="retained"`.
+This takes precedence over #MOCK directives; clean sibling members and
+:Zone.Identifier sidecars are not emulated.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 import time
+import zipfile
 
 ENCODING = "cp1252"
 DEFAULT_DELIMITER = "__INPUT_END__"
 GUILLEMET = "»"
+
+# Signature registry for real downloaded test files: content containing a
+# signature is reported as a threat with the registered verdict name,
+# exactly as the real scanner does (probed against data/ecls.exe on
+# test_files/threats/eicar_com.zip). Extend this mapping to detect
+# additional samples.
+THREAT_SIGNATURES: dict[bytes, str] = {
+    b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE": "Eicar test file",
+}
+THREAT_ACTION = "retained"
+THREAT_NESTING_LIMIT = 4
 
 
 def emit(line: str) -> None:
@@ -115,6 +135,61 @@ def arg_value_from_argv(argv: list[str], flag: str) -> str:
     return ""
 
 
+def _signature_threat(content: bytes) -> str | None:
+    for signature, threat in THREAT_SIGNATURES.items():
+        if signature in content:
+            return threat
+    return None
+
+
+def _nested_threat_members(
+    path: str, content: bytes, depth: int
+) -> list[tuple[str, str]]:
+    if depth >= THREAT_NESTING_LIMIT:
+        return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            members = [
+                (info.filename, archive.read(info.filename))
+                for info in archive.infolist()
+                if not info.is_dir()
+            ]
+    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
+        return []
+    members_with_threats = []
+    for member_name, member_content in members:
+        member_path = f"{path} {GUILLEMET} ZIP {GUILLEMET} {member_name}"
+        threat = _signature_threat(member_content)
+        if threat is not None:
+            members_with_threats.append((member_path, threat))
+            members_with_threats.extend(
+                _nested_threat_members(member_path, member_content, depth + 1)
+            )
+    return members_with_threats
+
+
+def _threat_scan(
+    sent_path: str, content: bytes, delimiter: str
+) -> tuple[str | None, list[str]]:
+    """Emulate a real-scanner detection: when the content carries a known
+    signature, return the detected threat name plus the complete entry set
+    (container, each nested ZIP member on the infection chain, delimiter);
+    otherwise return (None, [])."""
+    threat = _signature_threat(content)
+    if threat is None:
+        return None, []
+    entries = [
+        f'name="{sent_path}", threat="{threat}", action="{THREAT_ACTION}", info=""'
+    ]
+    entries.extend(
+        f'name="{member_path}", threat="{member_threat}", '
+        f'action="{THREAT_ACTION}", info=""'
+        for member_path, member_threat in _nested_threat_members(sent_path, content, 1)
+    )
+    entries.append(delimiter)
+    return threat, entries
+
+
 def main() -> int:
     argv = sys.argv[1:]
     delimiter = delimiter_from_argv(argv)
@@ -149,12 +224,13 @@ def main() -> int:
         log_event(log_dir, "start", sent_path)
         try:
             with open(sent_path, "rb") as handle:
-                content = handle.read().decode(ENCODING, errors="replace")
+                content_bytes = handle.read()
         except OSError:
             emit(f'name="{sent_path}", threat="", action="", info="unable to open"')
             emit(delimiter)
             log_event(log_dir, "end", sent_path)
             continue
+        content = content_bytes.decode(ENCODING, errors="replace")
         directives = parse_directives(content.splitlines())
         if directives["crash"]:
             log_event(log_dir, "crash", sent_path)
@@ -170,10 +246,16 @@ def main() -> int:
             emit(delimiter)
             log_event(log_dir, "end", sent_path)
             continue
-        threat = directives["threat"]
+        detected_threat, threat_lines = _threat_scan(
+            sent_path, content_bytes, delimiter
+        )
+        threat = detected_threat if detected_threat is not None else directives["threat"]
         if directives["unopenable"]:
             # the verified real-scanner verdict for an unopenable file
             emit(f'name="{sent_path}", threat="", action="", info="unable to open"')
+        elif threat_lines:
+            for line in threat_lines:
+                emit(line)
         else:
             emit(f'name="{sent_path}", threat="{threat}", action="", info=""')
         if directives["zip"]:
