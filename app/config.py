@@ -95,7 +95,7 @@ class Settings:
         return (*self.ecls_cmd, *self.ecls_args)
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         raw_cmd = os.environ.get("ECLS_CMD", DEFAULT_ECLS_CMD).split()
         if not raw_cmd:
             raise ValueError("ECLS_CMD must not be empty")
@@ -112,7 +112,9 @@ class Settings:
             ecls_cmd=ecls_cmd,
             ecls_args=ecls_args,
             workers=_positive_int(os.environ.get("ECLS_WORKERS"), DEFAULT_WORKERS),
-            timeout_s=_positive_float(os.environ.get("ECLS_TIMEOUT_S"), DEFAULT_TIMEOUT_S),
+            timeout_s=_positive_float(
+                os.environ.get("ECLS_TIMEOUT_S"), DEFAULT_TIMEOUT_S
+            ),
             startup_timeout_s=_positive_float(
                 os.environ.get("ECLS_STARTUP_TIMEOUT_S"), DEFAULT_STARTUP_TIMEOUT_S
             ),

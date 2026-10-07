@@ -27,7 +27,9 @@ def test_defaults_reference_real_scanner_and_protocol():
 
 
 def test_delimiter_follows_batch_delimiter_argument():
-    settings = Settings(ecls_args=("/log-all", "/stdin-filelist", "/batch-delimiter=XX_END__"))
+    settings = Settings(
+        ecls_args=("/log-all", "/stdin-filelist", "/batch-delimiter=XX_END__")
+    )
     assert settings.delimiter == "XX_END__"
     assert Settings(ecls_args=("/log-all",)).delimiter == "__INPUT_END__"
 

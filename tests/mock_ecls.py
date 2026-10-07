@@ -77,7 +77,7 @@ def log_dir_from_argv(argv: list[str]) -> str:
 def log_event(log_dir: str, kind: str, sent_path: str) -> None:
     if not log_dir:
         return
-    data = f"{kind}\t{time.time():.6f}\t{os.getpid()}\t{sent_path}\n".encode("utf-8")
+    data = f"{kind}\t{time.time():.6f}\t{os.getpid()}\t{sent_path}\n".encode()
     log_file = os.path.join(log_dir, f"{os.getpid()}.log")
     fd = os.open(log_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
     try:
@@ -249,7 +249,9 @@ def main() -> int:
         detected_threat, threat_lines = _threat_scan(
             sent_path, content_bytes, delimiter
         )
-        threat = detected_threat if detected_threat is not None else directives["threat"]
+        threat = (
+            detected_threat if detected_threat is not None else directives["threat"]
+        )
         if directives["unopenable"]:
             # the verified real-scanner verdict for an unopenable file
             emit(f'name="{sent_path}", threat="", action="", info="unable to open"')

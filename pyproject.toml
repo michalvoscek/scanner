@@ -6,3 +6,24 @@ testpaths = ["tests"]
 markers = [
     "test_files: scan the real files in test_files/threats and test_files/safe",
 ]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+exclude = [".venv", "data", "test_files"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "RUF", # ruff-specific rules
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]

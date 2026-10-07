@@ -79,7 +79,8 @@ async def save_upload(upload: UploadFile, settings: Settings) -> SavedUpload:
                 total += len(chunk)
                 if limit is not None and total > limit:
                     raise UploadTooLarge(
-                        f"upload {original_name!r} exceeds the size limit of {limit} bytes"
+                        f"upload {original_name!r} exceeds the "
+                        f"size limit of {limit} bytes"
                     )
                 await run_in_threadpool(target.write, chunk)
         finally:

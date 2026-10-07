@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.routing import APIRouter
@@ -45,12 +46,17 @@ def get_pool(request: Request) -> EclsPool:
 
 router = APIRouter()
 
+UploadFileDep = Annotated[UploadFile, File()]
+FilesDep = Annotated[list[UploadFile], File()]
+SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
+PoolDep = Annotated[EclsPool, Depends(get_pool)]
+
 
 @router.post("/scanFile", response_model=ScanResponse)
 async def scan_file(
-    file: UploadFile = File(...),
-    settings: Settings = Depends(get_settings_dep),
-    pool: EclsPool = Depends(get_pool),
+    file: UploadFileDep,
+    settings: SettingsDep,
+    pool: PoolDep,
 ) -> ScanResponse:
     saved = await _save(file, settings)
     try:
@@ -70,9 +76,9 @@ async def scan_file(
 
 @router.post("/scanMultipleFiles", response_model=ScanResponse)
 async def scan_multiple_files(
-    files: list[UploadFile] = File(...),
-    settings: Settings = Depends(get_settings_dep),
-    pool: EclsPool = Depends(get_pool),
+    files: FilesDep,
+    settings: SettingsDep,
+    pool: PoolDep,
 ) -> ScanResponse:
     saved: list[SavedUpload] = []
     try:
@@ -87,7 +93,7 @@ async def scan_multiple_files(
             await remove_upload(item)
     failures = [
         (item.original_name, result)
-        for item, result in zip(saved, results)
+        for item, result in zip(saved, results, strict=True)
         if isinstance(result, BaseException)
     ]
     if failures:

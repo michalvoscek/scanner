@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from app.ecls.process import EclsSpawnError
 from app.main import create_app
 
 TEST_FILES_DIR = Path(__file__).resolve().parent.parent / "test_files"
@@ -40,7 +41,10 @@ async def scan_file(client, filename, content):
 
 
 async def scan_multiple(client, uploads):
-    files = [("files", (name, content, "application/octet-stream")) for name, content in uploads]
+    files = [
+        ("files", (name, content, "application/octet-stream"))
+        for name, content in uploads
+    ]
     return await client.post("/scanMultipleFiles", files=files)
 
 
@@ -48,7 +52,9 @@ async def test_scan_file_returns_readme_shape(client):
     response = await scan_file(client, "test.zip", b"plain")
     assert response.status_code == 200
     assert response.json() == {
-        "scan_results": [{"name": ["test.zip"], "threat": "is OK", "action": "", "info": ""}]
+        "scan_results": [
+            {"name": ["test.zip"], "threat": "is OK", "action": "", "info": ""}
+        ]
     }
 
 
@@ -59,8 +65,18 @@ async def test_scan_file_nested_zip_entries(client):
     assert response.json() == {
         "scan_results": [
             {"name": ["test.zip"], "threat": "is OK", "action": "", "info": ""},
-            {"name": ["test.zip", "ZIP", "ah_dna.exe"], "threat": "is OK", "action": "", "info": ""},
-            {"name": ["test.zip", "ZIP", "ah_dna.ini"], "threat": "is OK", "action": "", "info": ""},
+            {
+                "name": ["test.zip", "ZIP", "ah_dna.exe"],
+                "threat": "is OK",
+                "action": "",
+                "info": "",
+            },
+            {
+                "name": ["test.zip", "ZIP", "ah_dna.ini"],
+                "threat": "is OK",
+                "action": "",
+                "info": "",
+            },
         ]
     }
 
@@ -407,7 +423,7 @@ async def test_startup_fails_when_banner_never_completes(make_settings):
     app = create_app(
         make_settings(mock_args=["/nobanner"], startup_timeout_s=2.0, workers=1)
     )
-    with pytest.raises(Exception):
+    with pytest.raises(EclsSpawnError):
         async with app.router.lifespan_context(app):
             pass
 
@@ -492,7 +508,7 @@ async def test_startup_fails_fast_when_scanner_dies_immediately(make_settings):
     app = create_app(
         make_settings(ecls_cmd=(sys.executable, "-c", "import sys; sys.exit(0)"))
     )
-    with pytest.raises(Exception):
+    with pytest.raises(EclsSpawnError):
         async with app.router.lifespan_context(app):
             pass
 
@@ -501,6 +517,6 @@ async def test_startup_fails_fast_when_scanner_exe_is_missing(make_settings):
     app = create_app(
         make_settings(ecls_cmd=("definitely-missing-scanner-xyz.exe",))
     )
-    with pytest.raises(Exception):
+    with pytest.raises(EclsSpawnError):
         async with app.router.lifespan_context(app):
             pass

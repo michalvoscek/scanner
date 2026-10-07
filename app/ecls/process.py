@@ -188,7 +188,8 @@ class EclsProcess:
             payload = (sent_path + _INPUT_NEWLINE).encode(self._settings.encoding)
         except UnicodeEncodeError as exc:
             raise EclsStreamError(
-                f"scanner path is not representable in {self._settings.encoding}: {sent_path!r}"
+                "scanner path is not representable in "
+                f"{self._settings.encoding}: {sent_path!r}"
             ) from exc
         try:
             stdin.write(payload)

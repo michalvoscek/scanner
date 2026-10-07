@@ -26,20 +26,20 @@ def _make_settings(**overrides) -> Settings:
         ecls_cmd += ["--log", str(log_dir)]
     if mock_args:
         ecls_cmd += list(mock_args)
-    values = dict(
-        ecls_cmd=tuple(ecls_cmd),
-        ecls_args=(
+    values = {
+        "ecls_cmd": tuple(ecls_cmd),
+        "ecls_args": (
             "/log-all",
             "/stdin-filelist",
             "/batch-delimiter=__INPUT_END__",
         ),
-        workers=4,
-        timeout_s=TEST_TIMEOUT_S,
-        startup_timeout_s=TEST_STARTUP_TIMEOUT_S,
-        encoding="cp1252",
-        temp_base=None,
-        max_upload_bytes=None,
-    )
+        "workers": 4,
+        "timeout_s": TEST_TIMEOUT_S,
+        "startup_timeout_s": TEST_STARTUP_TIMEOUT_S,
+        "encoding": "cp1252",
+        "temp_base": None,
+        "max_upload_bytes": None,
+    }
     values.update(overrides)
     return Settings(**values)
 

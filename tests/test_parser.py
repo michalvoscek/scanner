@@ -34,9 +34,15 @@ def parse_all(lines):
 def test_readme_sample_parses_fully():
     assert parse_all(README_LINES) == [
         ScanEntry(name=["test.zip"], threat="is OK", action="", info=""),
-        ScanEntry(name=["test.zip", "ZIP", "ah_dna.exe"], threat="is OK", action="", info=""),
-        ScanEntry(name=["test.zip", "ZIP", "ah_dna.ini"], threat="is OK", action="", info=""),
-        ScanEntry(name=["test.zip", "ZIP", "ecls.exe"], threat="is OK", action="", info=""),
+        ScanEntry(
+            name=["test.zip", "ZIP", "ah_dna.exe"], threat="is OK", action="", info=""
+        ),
+        ScanEntry(
+            name=["test.zip", "ZIP", "ah_dna.ini"], threat="is OK", action="", info=""
+        ),
+        ScanEntry(
+            name=["test.zip", "ZIP", "ecls.exe"], threat="is OK", action="", info=""
+        ),
     ]
 
 
@@ -45,7 +51,8 @@ def test_junk_lines_are_ignored():
         "",
         "   ",
         "\t",
-        "ECLS Command-line scanner, version 11.1.65535.0, (C) 1992-2018 ESET, spol. s r.o.",
+        "ECLS Command-line scanner, version 11.1.65535.0, "
+        "(C) 1992-2018 ESET, spol. s r.o.",
         "Command line: /log-all test.zip",
         "Scan started at:   Tue Jul 30 14:45:42 2019",
         "Scan completed at: Tue Jul 30 14:46:01 2019",
@@ -71,7 +78,10 @@ def test_leading_whitespace_and_trailing_cr_are_tolerated():
 
 
 def test_empty_and_nonempty_fields_roundtrip():
-    line = 'name="x.exe", threat="a threat name »", action="cleaned", info="was infected"'
+    line = (
+        'name="x.exe", threat="a threat name »", action="cleaned", '
+        'info="was infected"'
+    )
     assert parse_line(line) == ScanEntry(
         name=["x.exe"], threat="a threat name »", action="cleaned", info="was infected"
     )
@@ -110,18 +120,22 @@ def test_normalize_replaces_sent_path_in_first_component_only():
     normalized = normalize_entries(entries, sent, "test.zip")
     assert normalized == [
         ScanEntry(name=["test.zip"], threat="is OK", action="", info=""),
-        ScanEntry(name=["test.zip", "ZIP", "ah_dna.exe"], threat="is OK", action="", info=""),
+        ScanEntry(
+            name=["test.zip", "ZIP", "ah_dna.exe"], threat="is OK", action="", info=""
+        ),
     ]
 
 
 def test_normalize_is_noop_for_bare_filenames():
     entries = [ScanEntry(name=["test.zip"], threat="is OK", action="", info="")]
-    assert normalize_entries(entries, r"C:\Temp\ecls_abc\upload_001.zip", "test.zip") == entries
+    sent = r"C:\Temp\ecls_abc\upload_001.zip"
+    assert normalize_entries(entries, sent, "test.zip") == entries
 
 
 def test_normalize_is_noop_when_prefix_does_not_match():
     entries = [ScanEntry(name=["other.zip"], threat="is OK", action="", info="")]
-    assert normalize_entries(entries, r"C:\Temp\ecls_abc\upload_001.zip", "test.zip") == entries
+    sent = r"C:\Temp\ecls_abc\upload_001.zip"
+    assert normalize_entries(entries, sent, "test.zip") == entries
 
 
 def test_normalize_tolerates_suffix_after_sent_path():
