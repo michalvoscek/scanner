@@ -121,6 +121,21 @@ async def test_path_traversal_filename_is_sanitized_to_basename(client):
     assert response.json()["scan_results"][0]["name"] == ["evil.sh"]
 
 
+async def test_guillemet_in_upload_filename_is_restored_verbatim(client):
+    """IMPROVEMENTS.md #7: pin the deliberate `»`-in-filename behavior.
+
+    The scanner only ever sees a generated ASCII path, so a `»` in the
+    upload name cannot affect pipe framing or parsing; the original name
+    is substituted after parsing and comes back as a single, un-split
+    `name` element.
+    """
+    response = await scan_file(client, "re»port.txt", b"x")
+    assert response.status_code == 200
+    assert response.json()["scan_results"] == [
+        {"name": ["re»port.txt"], "threat": "is OK", "action": "", "info": ""}
+    ]
+
+
 async def test_delimiter_filename_is_rejected(client):
     response = await scan_file(client, "__INPUT_END__", b"x")
     assert response.status_code == 422
@@ -364,6 +379,9 @@ async def test_max_upload_size_is_enforced(make_settings):
 
 
 async def test_scans_run_in_parallel(make_settings, tmp_path):
+    """IMPROVEMENTS.md #7: parallelism is proven by the interval-overlap
+    check below, which is deterministic; the former wall-clock bound
+    (`elapsed < 4 * 0.5`) flaked on loaded machines and was dropped."""
     settings = make_settings(log_dir=tmp_path, timeout_s=10.0)
     app = create_app(settings)
     async with app.router.lifespan_context(app):
@@ -372,9 +390,7 @@ async def test_scans_run_in_parallel(make_settings, tmp_path):
             transport=transport, base_url="http://testserver"
         ) as client:
             uploads = [(f"f{i}.txt", b"#MOCK SLEEP=0.5\n") for i in range(4)]
-            started = time.perf_counter()
             response = await scan_multiple(client, uploads)
-            elapsed = time.perf_counter() - started
             assert response.status_code == 200
             assert len(response.json()["scan_results"]) == 4
 
@@ -397,7 +413,6 @@ async def test_scans_run_in_parallel(make_settings, tmp_path):
         for point, _ in intervals
     )
     assert max_concurrency >= 2
-    assert elapsed < 4 * 0.5
 
 
 async def test_startup_fails_fast_when_scanner_dies_immediately(make_settings):

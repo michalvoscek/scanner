@@ -105,7 +105,7 @@ sites now go through `run_in_threadpool` like the existing `write` call;
 - **Shutdown grace reuses `startup_timeout_s`** (`app/ecls/process.py:94`) —
   semantically a different budget; give it its own constant/setting.
 
-## 7. Docs & tests (low)
+## 7. ~~Docs & tests (low)~~ — FIXED
 
 - **Usage documentation is missing**: `README.md` is the assignment text. Add
   a short section (or separate file) covering how to run
@@ -121,6 +121,18 @@ sites now go through `run_in_threadpool` like the existing `write` call;
   assertion (`elapsed < 4 * 0.5`, i.e. `< 2 s`) can flake on loaded machines;
   the interval-overlap assertion is already the robust one — the timing assert
   could be relaxed or dropped.
+
+**Implemented:** `README.md` now has a "Running the app" section (single
+`uvicorn app.main:app` invocation, the single-process `--workers` caveat) and
+a configuration table covering all `ECLS_*` env vars. The #1/#2 regression
+tests are in place: parser quote-injection unit test (`tests/test_parser.py`
+§#1), the end-to-end quote-injection test (`test_api.py`), and the
+dead-idle-worker transparency test via `#MOCK DIE` (`test_api.py`). The
+optional `»`-in-upload-filename behavior is pinned by
+`test_guillemet_in_upload_filename_is_restored_verbatim`: the upload name is
+accepted and returned verbatim as a single un-split `name` element. The
+flaky wall-clock assertion in `test_scans_run_in_parallel` was dropped;
+the deterministic interval-overlap check remains the parallelism proof.
 
 ## 8. ~~Parser fails open on unparsed or empty output (medium-high)~~ — FIXED
 
