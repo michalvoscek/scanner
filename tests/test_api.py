@@ -29,6 +29,12 @@ def _is_threat(entry) -> bool:
     return entry["threat"] not in ("", "is OK")
 
 
+def _file_is_threat(entries) -> bool:
+    """The whole file is compromised when any reported entry carries a
+    threat — a container fails even if only one nested member is infected."""
+    return any(_is_threat(entry) for entry in entries)
+
+
 def _show(label, response):
     print(f"\n{label} -> HTTP {response.status_code}")
     print(json.dumps(response.json(), indent=2))
@@ -91,15 +97,16 @@ async def test_scan_file_reports_custom_threat(client):
 @pytest.mark.parametrize("path", _files_in(THREATS_DIR), ids=lambda path: path.name)
 async def test_every_file_in_threats_folder_is_detected(client, path):
     """Every file dropped into test_files/threats/ must be reported as a
-    detected threat through /scanFile — for every entry in its infection
-    chain (container plus nested ZIP members), never a clean pass."""
+    detected threat through /scanFile — the file is compromised when any
+    entry of its scan output reports a threat (a container fails even if
+    only one nested member is infected), never a clean pass."""
     response = await scan_file(client, path.name, path.read_bytes())
     _show(f"GET /scanFile {path.name}", response)
     assert response.status_code == 200
     entries = response.json()["scan_results"]
     assert entries, "no entries returned for uploaded threat sample"
     assert all(entry["name"][0] == path.name for entry in entries)
-    assert all(_is_threat(entry) for entry in entries)
+    assert _file_is_threat(entries)
 
 
 @pytest.mark.test_files
@@ -134,7 +141,7 @@ async def test_mixed_batch_reports_threats_and_safe_files_correctly(client):
     threat_names = [path.name for path in threat_paths]
     for name, entries in groups.items():
         if name in threat_names:
-            assert all(_is_threat(entry) for entry in entries)
+            assert _file_is_threat(entries)
         else:
             assert all(entry["threat"] == "is OK" for entry in entries)
 

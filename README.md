@@ -99,10 +99,13 @@ test_files/
 └── safe/      # every file here must scan clean
 ```
 
-- The mock scanner detects content by signature (`THREAT_SIGNATURES` in
-  `tests/mock_ecls.py`) — files in `threats/` either need a registered
-  signature or a `#MOCK THREAT=<name>` line in their content; anything
-  else scans clean.
+- The mock scanner detects threat samples automatically: `tests/conftest.py`
+  computes the SHA-256 digest of every file currently in `threats/` and
+  passes it to the mock, which then reports matching content as a detected
+  threat. Dropping a sample into the folder is the only setup needed — no
+  code changes. Anything else scans clean, which is all `safe/` requires.
+- For synthetic files, a `#MOCK THREAT=<name>` line in the uploaded content
+  makes the mock report that verdict directly.
 - Files in `safe/` need no preparation; arbitrary files scan clean.
 - Empty subfolders are fine — the corresponding tests simply have no cases.
 

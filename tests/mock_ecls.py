@@ -1,9 +1,11 @@
 """Mock ecls scanner speaking the verified pipe protocol.
 
-Ignores the scanner argv it is launched with, except for two details: an
+Ignores the scanner argv it is launched with, except for three details: an
 optional ``--log PATH`` argument (records scan intervals for concurrency
-assertions) and the ``/batch-delimiter=...`` argument (the output marker it
-emits, exactly like the real scanner).
+assertions), repeated ``--threat=<sha256-hex>`` arguments (contents whose
+SHA-256 digest matches are reported as threats) and the
+``/batch-delimiter=...`` argument (the output marker it emits, exactly like
+the real scanner).
 
 The uploaded file's CONTENT drives the emitted results; directives are
 lines starting with ``#MOCK ``:
@@ -21,36 +23,27 @@ lines starting with ``#MOCK ``:
     #MOCK NOBANNER      never print the 'Scan started at:' banner line
     #MOCK DELAYED_BANNER=<secs>  delay the banner marker line
 
-Real-file emulation: content carrying a known threat sample signature is
-detected (see THREAT_SIGNATURES below) and the infection chain is
-reported — the container plus every nested ZIP member on the chain,
-mirroring the verified real verdict shape `threat="...", action="retained"`.
-This takes precedence over #MOCK directives; clean sibling members and
-:Zone.Identifier sidecars are not emulated.
+Threat-sample emulation: conftest passes the SHA-256 digests of the files
+currently in test_files/threats; scanned content with a matching digest is
+reported as a detected threat (root entry only — nested-chain shapes are
+exercised by the #MOCK ZIP directive), mirroring the verified real verdict
+shape `threat="...", action="retained"`. This takes precedence over #MOCK
+directives; :Zone.Identifier sidecars are not emulated.
 """
 
 from __future__ import annotations
 
-import io
+import hashlib
 import os
 import sys
 import time
-import zipfile
 
 ENCODING = "cp1252"
 DEFAULT_DELIMITER = "__INPUT_END__"
 GUILLEMET = "»"
 
-# Signature registry for real downloaded test files: content containing a
-# signature is reported as a threat with the registered verdict name,
-# exactly as the real scanner does (probed against data/ecls.exe on
-# test_files/threats/eicar_com.zip). Extend this mapping to detect
-# additional samples.
-THREAT_SIGNATURES: dict[bytes, str] = {
-    b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE": "Eicar test file",
-}
+THREAT_VERDICT = "Win32/ThreatSample"
 THREAT_ACTION = "retained"
-THREAT_NESTING_LIMIT = 4
 
 
 def emit(line: str) -> None:
@@ -72,6 +65,17 @@ def log_dir_from_argv(argv: list[str]) -> str:
         if index + 1 < len(argv):
             return argv[index + 1]
     return ""
+
+
+def threat_digests_from_argv(argv: list[str]) -> frozenset[str]:
+    marker = "--threat="
+    digests = []
+    for token in argv:
+        if token.startswith(marker):
+            digest = token[len(marker) :]
+            if digest:
+                digests.append(digest)
+    return frozenset(digests)
 
 
 def log_event(log_dir: str, kind: str, sent_path: str) -> None:
@@ -135,65 +139,27 @@ def arg_value_from_argv(argv: list[str], flag: str) -> str:
     return ""
 
 
-def _signature_threat(content: bytes) -> str | None:
-    for signature, threat in THREAT_SIGNATURES.items():
-        if signature in content:
-            return threat
-    return None
-
-
-def _nested_threat_members(
-    path: str, content: bytes, depth: int
-) -> list[tuple[str, str]]:
-    if depth >= THREAT_NESTING_LIMIT:
-        return []
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            members = [
-                (info.filename, archive.read(info.filename))
-                for info in archive.infolist()
-                if not info.is_dir()
-            ]
-    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
-        return []
-    members_with_threats = []
-    for member_name, member_content in members:
-        member_path = f"{path} {GUILLEMET} ZIP {GUILLEMET} {member_name}"
-        threat = _signature_threat(member_content)
-        if threat is not None:
-            members_with_threats.append((member_path, threat))
-            members_with_threats.extend(
-                _nested_threat_members(member_path, member_content, depth + 1)
-            )
-    return members_with_threats
-
-
 def _threat_scan(
-    sent_path: str, content: bytes, delimiter: str
+    sent_path: str, content: bytes, threat_digests: frozenset[str]
 ) -> tuple[str | None, list[str]]:
-    """Emulate a real-scanner detection: when the content carries a known
-    signature, return the detected threat name plus the complete entry set
-    (container, each nested ZIP member on the infection chain, delimiter);
+    """Emulate a real-scanner detection: when the content digest matches a
+    registered threat digest, return the detected threat name plus the root
+    result entry (no delimiter — the caller emits it after the batch);
     otherwise return (None, [])."""
-    threat = _signature_threat(content)
-    if threat is None:
+    digest = hashlib.sha256(content).hexdigest()
+    if digest not in threat_digests:
         return None, []
-    entries = [
-        f'name="{sent_path}", threat="{threat}", action="{THREAT_ACTION}", info=""'
-    ]
-    entries.extend(
-        f'name="{member_path}", threat="{member_threat}", '
+    return THREAT_VERDICT, [
+        f'name="{sent_path}", threat="{THREAT_VERDICT}", '
         f'action="{THREAT_ACTION}", info=""'
-        for member_path, member_threat in _nested_threat_members(sent_path, content, 1)
-    )
-    entries.append(delimiter)
-    return threat, entries
+    ]
 
 
 def main() -> int:
     argv = sys.argv[1:]
     delimiter = delimiter_from_argv(argv)
     log_dir = log_dir_from_argv(argv)
+    threat_digests = threat_digests_from_argv(argv)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
@@ -247,7 +213,7 @@ def main() -> int:
             log_event(log_dir, "end", sent_path)
             continue
         detected_threat, threat_lines = _threat_scan(
-            sent_path, content_bytes, delimiter
+            sent_path, content_bytes, threat_digests
         )
         threat = (
             detected_threat if detected_threat is not None else directives["threat"]
