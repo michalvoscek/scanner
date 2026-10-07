@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,11 @@ def _files_in(folder: Path) -> list[Path]:
 
 def _is_threat(entry) -> bool:
     return entry["threat"] not in ("", "is OK")
+
+
+def _show(label, response):
+    print(f"\n{label} -> HTTP {response.status_code}")
+    print(json.dumps(response.json(), indent=2))
 
 
 async def scan_file(client, filename, content):
@@ -65,12 +71,14 @@ async def test_scan_file_reports_custom_threat(client):
     assert response.json()["scan_results"][0]["threat"] == "TestTrojan.A"
 
 
+@pytest.mark.test_files
 @pytest.mark.parametrize("path", _files_in(THREATS_DIR), ids=lambda path: path.name)
 async def test_every_file_in_threats_folder_is_detected(client, path):
     """Every file dropped into test_files/threats/ must be reported as a
     detected threat through /scanFile — for every entry in its infection
     chain (container plus nested ZIP members), never a clean pass."""
     response = await scan_file(client, path.name, path.read_bytes())
+    _show(f"GET /scanFile {path.name}", response)
     assert response.status_code == 200
     entries = response.json()["scan_results"]
     assert entries, "no entries returned for uploaded threat sample"
@@ -78,10 +86,12 @@ async def test_every_file_in_threats_folder_is_detected(client, path):
     assert all(_is_threat(entry) for entry in entries)
 
 
+@pytest.mark.test_files
 @pytest.mark.parametrize("path", _files_in(SAFE_DIR), ids=lambda path: path.name)
 async def test_every_file_in_safe_folder_is_clean(client, path):
     """Every file dropped into test_files/safe/ must scan clean."""
     response = await scan_file(client, path.name, path.read_bytes())
+    _show(f"GET /scanFile {path.name}", response)
     assert response.status_code == 200
     entries = response.json()["scan_results"]
     assert entries, "no entries returned for uploaded safe file"
@@ -91,11 +101,13 @@ async def test_every_file_in_safe_folder_is_clean(client, path):
     )
 
 
+@pytest.mark.test_files
 async def test_mixed_batch_reports_threats_and_safe_files_correctly(client):
     threat_paths = _files_in(THREATS_DIR)
     safe_paths = _files_in(SAFE_DIR)
     uploads = [(path.name, path.read_bytes()) for path in threat_paths + safe_paths]
     response = await scan_multiple(client, uploads)
+    _show("GET /scanMultipleFiles", response)
     assert response.status_code == 200
     results = response.json()["scan_results"]
     # nested entries repeat the root name, so group by first-seen name[0]

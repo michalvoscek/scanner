@@ -105,3 +105,18 @@ test_files/
   else scans clean.
 - Files in `safe/` need no preparation; arbitrary files scan clean.
 - Empty subfolders are fine — the corresponding tests simply have no cases.
+
+Run only these file-based tests, with the full scanner API response for
+every file printed:
+
+```powershell
+pytest -m test_files -v -s
+```
+
+- `-m test_files` selects the marked tests (use `-m "not test_files"` to
+  exclude them from a full run)
+- `-v` prints one line per scanned file (the filename is in the test ID)
+- `-s` shows the pretty-printed JSON that the API returned for each file
+
+Everything else (protocol edge cases, worker pool behavior) uses inline
+mock content and runs in the default `pytest` invocation.
