@@ -1,148 +1,89 @@
-# Paralelné skenovanie súborov cez FastAPI
+# ecls scan API
 
-## Popis problému
+A FastAPI service that wraps the ESET Command Line Scanner (`ecls.exe`) for
+parallel file scanning. On startup the server spawns a pool of persistent
+`ecls.exe` instances running in stream mode (`/log-all /stdin-filelist
+/batch-delimiter=__INPUT_END__`) and talks to them over their stdin/stdout
+pipes, so no process startup cost is paid per request. Incoming scans are
+routed dynamically to free workers, and `/scanMultipleFiles` scans its files
+in parallel across the pool.
 
-Pri úlohách ktoré každodenne riešime je veľmi často potrebné oskenovať sadu súborov našim detekčným enginom a určitým spôsobom spracovať výstup. Skenovanie je pomerne časovo náročné a preto pre našu prácu potrebujeme rýchle a spoľahlivé riešenie. Náš preferovaný spôsob je použitie nástroja ecls.exe (ESET Command Line Scanner). Keďže súbory skenujeme v mnohých projektoch napísaných v mnohých jazykoch je vhodné mať pre ecls.exe vytvorené rozhranie pre tieto jazyky.
+## Endpoints
 
-## Zadanie
+Both endpoints accept `multipart/form-data` uploads and return the parsed
+scanner output with `name` split on the `»` character.
 
-Napíšte FastAPI serverovú aplikáciu, ktorá bude obsluhovať dva typy požiadaviek:
+- `POST /scanFile` — scan a single file (multipart field `file`).
+- `POST /scanMultipleFiles` — scan several files in parallel (multipart field
+  `files`); all-or-nothing: any failure means no results are returned.
 
-- oskenovanie jedného súboru (`POST /scanFile`),
-- paralelné oskenovanie viacero súborov naraz (`POST /scanMultipleFiles`).
-
-Obe API budú na vstupe očakávať uploadnuté dáta formou multipart/form-data.
-
-Server pri štarte na pozadí spustí niekoľko perzistentných inštancií programu ecls.exe v režime streamovej komunikácie pomocou pipes[^1]. Spúšťanie ecls.exe s každou prichádzajúcou požiadavkou by bolo totiž časovo neefektívne. Smerovanie skenovacích požiadaviek na tieto ecls.exe procesy by malo byť dynamické a paralelné tak, aby skenovanie viacero súborov naraz trvalo čo najkratšie.
-
-Výstup zo samotného ecls.exe spracujte do štruktúry, ktorá bude obsahovať meno súboru, threat, action, info. Položka name by mala byť vo forme zoznamu, ktorý vznikne rozdelením názvu súboru podľa znaku „»“.
-
-Program implementujte v jazyku Python s použitím knižnice FastAPI.
-
-[^1]: V tomto móde komunikácie ecls.exe nedostáva mená súborov na vstup pri spustení, ale na štandardný vstup procesu, pričom výsledok vráti na štandardný výstup procesu. Koniec výstupu je označený reťazcom z argumentu /batch-delimiter. ecls.exe spúšťajte s argumentami `/log-all /stdin-filelist /batch-delimiter=__INPUT_END__`
-
-## Vzorové výstupy
-
-Surový výstup z ecls.exe.
-
-```
-ECLS Command-line scanner, version 11.1.65535.0, (C) 1992-2018 ESET, spol. s r.o.
-Module loader, version 1018NV (20190619), build 11051
-Module perseus, version 1554 (20190718), build 2047
-Module scanner, version 65715D (20190722), build 732494
-Module archiver, version 1289DNA (20190709), build 11390
-Module advheur, version 1193 (20190626), build 1175
-Module cleaner, version 1197 (20190711), build 1297
-Module pegasus, version 703707 (20190722), build 703707
-
-Command line: /log-all test.zip
-
-Scan started at:   Tue Jul 30 14:45:42 2019
-name="test.zip", threat="is OK", action="", info=""
-name="test.zip » ZIP » ah_dna.exe", threat="is OK", action="", info=""
-name="test.zip » ZIP » ah_dna.ini", threat="is OK", action="", info=""
-name="test.zip » ZIP » ecls.exe", threat="is OK", action="", info=""
-__INPUT_END__
-```
-
-Ukážka očakávaného výstupu API pre skenovanie jedného súboru test.zip cez `POST /scanFile`:
+Example response:
 
 ```json
 {
     "scan_results": [
-        {
-            "name": [
-                "test.zip"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ah_dna.exe"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ah_dna.ini"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ecls.exe"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        }
+        {"name": ["test.zip"], "threat": "is OK", "action": "", "info": ""},
+        {"name": ["test.zip", "ZIP", "ah_dna.exe"], "threat": "is OK", "action": "", "info": ""}
     ]
 }
 ```
 
-Ukážka očakávaného výstupu API pre skenovanie súboru test2.exe a test.zip cez `POST /scanMultipleFiles`:
+A detected threat is reported in `threat` (e.g. `threat: "Win32/Eicar`), clean
+files show `threat: "is OK"`.
 
-```json
-{
-    "scan_results": [
-        {
-            "name": [
-                "test2.exe"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ah_dna.exe"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ah_dna.ini"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        },
-        {
-            "name": [
-                "test.zip",
-                "ZIP",
-                "ecls.exe"
-            ],
-            "threat": "is OK",
-            "action": "",
-            "info": ""
-        }
-    ]
-}
+## Requirements
+
+- Windows (the bundled `data/ecls.exe` and the scanner's pipe/encoding
+  behavior are Windows-specific; pipe encoding defaults to cp1252)
+- Python 3.13+
+
+## Installation
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
+
+## Running the app
+
+```powershell
+uvicorn app.main:app
+```
+
+Or from Python directly:
+
+```powershell
+python -c "import uvicorn; uvicorn.run('app.main:app')"
+```
+
+Interactive API docs are then available at `http://127.0.0.1:8000/docs`.
+
+**Run uvicorn as a single process (do not pass `--workers N`).** The ecls pool
+lives inside the application process, so each uvicorn worker would start its
+own pool of `ECLS_WORKERS` scanner processes, multiplying memory usage and
+procesload. Process-level parallelism across scanner instances is already
+provided by the pool itself; use `ECLS_WORKERS` to scale it.
+
+## Configuration (environment variables)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ECLS_CMD` | `data/ecls.exe` | Scanner executable (plus optional extra arguments, whitespace-separated). Relative paths are resolved against the project root. |
+| `ECLS_ARGS` | `/log-all /stdin-filelist /batch-delimiter=__INPUT_END__` | Arguments passed to ecls.exe. The delimiter must stay in sync with the argument — it is derived from `/batch-delimiter=`. |
+| `ECLS_WORKERS` | `4` | Number of persistent ecls.exe processes in the pool. |
+| `ECLS_TIMEOUT_S` | `300` | Per-file scan timeout in seconds. |
+| `ECLS_STARTUP_TIMEOUT_S` | `20` | Timeout for spawning a worker and reading its banner. |
+| `ECLS_ENCODING` | `cp1252` | Encoding of the scanner pipe. |
+| `ECLS_TEMP_BASE` | system temp | Base directory for per-upload scan directories. |
+| `ECLS_MAX_UPLOAD_MB` | unlimited | Per-file upload size cap in MB (oversized uploads get HTTP 413). |
+
+## Testing
+
+```powershell
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests run against `tests/mock_ecls.py`, a scripted stand-in for the real
+scanner, so no ESET engine files are needed.
